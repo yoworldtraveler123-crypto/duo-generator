@@ -68,19 +68,27 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 
 
 EXTRACTION_PROMPT = """この画像は英語学習アプリ「abceed」のスクリーンショットです。
-画像内で「苦手」と判別される英単語を抽出してください。
+画像内で「色付き(オレンジ・赤・黄色など)で強調表示されている英単語」を抽出してください。
 
-苦手の判定基準(いずれかに該当するもの):
-- ✕、△、?マークが付いている
-- 「苦手」「未習得」「要復習」などのラベルが付いている
-- 習得度・正解率が低い表示(赤色など)になっている
-- リストが「苦手リスト」「△の単語」など、苦手専用画面と判断できる場合は全単語
+abceedでは、覚えるべき重要語が文章中でオレンジや赤などのアクセントカラーで強調表示されます。
+通常の本文(黒・グレー)とは色が違う単語のみが抽出対象です。
+
+判定基準(優先順):
+1. オレンジ・赤・黄色など、明らかに本文と色が違う英単語
+2. ハイライト・下線・太字で強調された英単語
+3. ✕・△マークなど苦手判定マークが付いた英単語
+4. 上記がない場合: 画像内のすべての見出し英単語
+
+除外対象:
+- UIボタン・タブの文字(Home, Settings など)
+- 日本語訳・例文・解説の英単語(あくまで覚えるべき単語のみ)
+- アプリ名・ロゴの文字
 
 出力ルール:
-- 英単語のみを1行1単語で出力(日本語訳・例文・UI文字は除外)
+- 英単語のみを1行1単語で出力
 - 重複は除く
 - 余計な説明・前置き・番号は付けない
-- 苦手判定が困難な場合は、画像内のすべての英単語(見出し語)を出力
+- 単語は小文字に統一して出力
 
 出力例:
 component
@@ -153,18 +161,20 @@ with tab_gen:
                     st.error(f"抽出エラー: {e}")
 
         if st.session_state.get("extracted_words"):
-            selected = st.multiselect(
-                "例文に使う単語を3〜5語選択",
+
+            def _sync_words():
+                st.session_state.words_input_area = " ".join(st.session_state.word_select)
+
+            st.multiselect(
+                "例文に使う単語を1〜5語選択(下の入力欄に自動反映)",
                 options=st.session_state.extracted_words,
                 max_selections=5,
                 key="word_select",
+                on_change=_sync_words,
             )
-            if selected and st.button("選択した単語を下の欄に入れる", key="fill_btn"):
-                st.session_state.words_input_area = " ".join(selected)
-                st.rerun()
 
     words_input = st.text_area(
-        "単語をスペース区切りで入力（3〜5語）",
+        "単語をスペース区切りで入力（1〜5語）",
         placeholder="例: negotiate deadline stakeholder",
         height=80,
         key="words_input_area",
@@ -172,8 +182,8 @@ with tab_gen:
 
     if st.button("例文を生成", type="primary"):
         words = words_input.strip().split()
-        if len(words) < 3 or len(words) > 5:
-            st.error("3〜5語を入力してください。")
+        if len(words) < 1 or len(words) > 5:
+            st.error("1〜5語を入力してください。")
         else:
             try:
                 with st.spinner("生成中..."):
