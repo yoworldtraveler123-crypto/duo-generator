@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """DUO 3.0風 ビジネス英語例文ジェネレーター - Streamlit Web App"""
 
+import base64
 import os
 import re
 
@@ -66,6 +67,59 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
     return _parse_response(text)
 
 
+EXTRACTION_PROMPT = """この画像は英語学習アプリ「abceed」のスクリーンショットです。
+画像内で「苦手」と判別される英単語を抽出してください。
+
+苦手の判定基準(いずれかに該当するもの):
+- ✕、△、?マークが付いている
+- 「苦手」「未習得」「要復習」などのラベルが付いている
+- 習得度・正解率が低い表示(赤色など)になっている
+- リストが「苦手リスト」「△の単語」など、苦手専用画面と判断できる場合は全単語
+
+出力ルール:
+- 英単語のみを1行1単語で出力(日本語訳・例文・UI文字は除外)
+- 重複は除く
+- 余計な説明・前置き・番号は付けない
+- 苦手判定が困難な場合は、画像内のすべての英単語(見出し語)を出力
+
+出力例:
+component
+negotiate
+stakeholder"""
+
+
+def extract_words_from_image(image_bytes: bytes, media_type: str) -> list[str]:
+    client = anthropic.Anthropic()
+    image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": image_data},
+                    },
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            }
+        ],
+    )
+
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    words = [w.strip().lower() for w in text.splitlines() if w.strip() and re.fullmatch(r"[a-zA-Z\-']+", w.strip())]
+    seen = set()
+    result = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            result.append(w)
+    return result
+
+
 # ── ページ設定 ────────────────────────────────────────────
 st.set_page_config(page_title="DUO 3.0風 ビジネス英語ジェネレーター", page_icon="📚", layout="wide")
 st.title("📚 DUO 3.0風 ビジネス英語例文ジェネレーター")
@@ -77,10 +131,43 @@ tab_gen, tab_hist = st.tabs(["生成", "履歴"])
 # ── タブ1: 生成 ───────────────────────────────────────────
 with tab_gen:
     st.subheader("英単語を入力して例文を生成")
+
+    with st.expander("📷 画像から苦手単語を抽出(abceedスクショ対応)"):
+        uploaded = st.file_uploader(
+            "abceedの苦手単語リストなどのスクショをアップロード",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="img_upload",
+        )
+        if uploaded is not None:
+            st.image(uploaded, caption="アップロード画像", width=300)
+            if st.button("画像から単語を抽出", key="extract_btn"):
+                try:
+                    with st.spinner("単語抽出中..."):
+                        words_found = extract_words_from_image(uploaded.getvalue(), uploaded.type)
+                    if not words_found:
+                        st.warning("単語を抽出できませんでした。別の画像でお試しください。")
+                    else:
+                        st.session_state.extracted_words = words_found
+                        st.success(f"{len(words_found)} 個の単語を抽出しました")
+                except Exception as e:
+                    st.error(f"抽出エラー: {e}")
+
+        if st.session_state.get("extracted_words"):
+            selected = st.multiselect(
+                "例文に使う単語を3〜5語選択",
+                options=st.session_state.extracted_words,
+                max_selections=5,
+                key="word_select",
+            )
+            if selected and st.button("選択した単語を下の欄に入れる", key="fill_btn"):
+                st.session_state.words_input_area = " ".join(selected)
+                st.rerun()
+
     words_input = st.text_area(
         "単語をスペース区切りで入力（3〜5語）",
         placeholder="例: negotiate deadline stakeholder",
         height=80,
+        key="words_input_area",
     )
 
     if st.button("例文を生成", type="primary"):
