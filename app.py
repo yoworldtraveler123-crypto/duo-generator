@@ -2,6 +2,7 @@
 """DUO 3.0風 ビジネス英語例文ジェネレーター - Streamlit Web App"""
 
 import base64
+import hashlib
 import os
 import re
 
@@ -148,14 +149,19 @@ with tab_gen:
         )
         if uploaded is not None:
             st.image(uploaded, caption="アップロード画像", width=300)
-            if st.button("画像から単語を抽出", key="extract_btn"):
+            image_bytes = uploaded.getvalue()
+            image_hash = hashlib.md5(image_bytes).hexdigest()
+
+            if st.session_state.get("last_image_hash") != image_hash:
                 try:
                     with st.spinner("単語抽出中..."):
-                        words_found = extract_words_from_image(uploaded.getvalue(), uploaded.type)
+                        words_found = extract_words_from_image(image_bytes, uploaded.type)
+                    st.session_state.last_image_hash = image_hash
+                    st.session_state.extracted_words = words_found
+                    st.session_state.word_select = []
                     if not words_found:
                         st.warning("単語を抽出できませんでした。別の画像でお試しください。")
                     else:
-                        st.session_state.extracted_words = words_found
                         st.success(f"{len(words_found)} 個の単語を抽出しました")
                 except Exception as e:
                     st.error(f"抽出エラー: {e}")
