@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """DUO 3.0風 ビジネス英語例文ジェネレーター - Streamlit Web App"""
 
+import os
 import re
 
 import anthropic
@@ -10,6 +11,9 @@ from dotenv import load_dotenv
 from database import delete_sentence, get_all_sentences, init_db, save_sentence, search_sentences
 
 load_dotenv()
+
+if "ANTHROPIC_API_KEY" in st.secrets and not os.getenv("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
 
 SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
 
