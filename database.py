@@ -16,9 +16,16 @@ def init_db() -> None:
                 words       TEXT    NOT NULL,
                 english     TEXT    NOT NULL,
                 japanese    TEXT    NOT NULL,
-                explanation TEXT    NOT NULL
+                explanation TEXT    NOT NULL,
+                status      TEXT    NOT NULL DEFAULT 'new',
+                view_count  INTEGER NOT NULL DEFAULT 0
             )
         """)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sentences)").fetchall()}
+        if "status" not in cols:
+            conn.execute("ALTER TABLE sentences ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
+        if "view_count" not in cols:
+            conn.execute("ALTER TABLE sentences ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0")
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str) -> int:
@@ -51,3 +58,29 @@ def search_sentences(keyword: str) -> list[dict]:
 def delete_sentence(row_id: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM sentences WHERE id = ?", (row_id,))
+
+
+def update_status(row_id: int, status: str) -> None:
+    if status not in {"new", "review", "mastered"}:
+        raise ValueError(f"invalid status: {status}")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE sentences SET status = ? WHERE id = ?", (status, row_id))
+
+
+def increment_view_count(row_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE sentences SET view_count = view_count + 1 WHERE id = ?", (row_id,))
+
+
+def get_sentences_by_status(status: str | None) -> list[dict]:
+    """statusで絞り込んだ履歴を取得。None or 'all' なら全件。"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if status in (None, "all"):
+            rows = conn.execute("SELECT * FROM sentences ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM sentences WHERE status = ? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+    return [dict(r) for r in rows]

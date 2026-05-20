@@ -13,7 +13,16 @@ import streamlit as st
 from dotenv import load_dotenv
 from streamlit.components.v1 import html as st_html
 
-from database import delete_sentence, get_all_sentences, init_db, save_sentence, search_sentences
+from database import (
+    delete_sentence,
+    get_all_sentences,
+    get_sentences_by_status,
+    increment_view_count,
+    init_db,
+    save_sentence,
+    search_sentences,
+    update_status,
+)
 
 load_dotenv()
 
@@ -290,18 +299,43 @@ def _speak_button(text: str) -> None:
     st_html(component_html, height=50)
 
 
+STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
+FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
+
+
 # ── タブ2: 履歴 ───────────────────────────────────────────
 with tab_hist:
+    filter_choice = st.radio(
+        "表示するカード",
+        options=list(FILTER_LABEL.keys()),
+        format_func=lambda k: FILTER_LABEL[k],
+        horizontal=True,
+        key="status_filter",
+    )
+
     search_query = st.text_input(
         "キーワード検索（単語から）",
         placeholder="例: negotiate",
         key="hist_search",
     )
 
-    rows = search_sentences(search_query) if search_query else get_all_sentences()
+    if search_query:
+        base_rows = search_sentences(search_query)
+        if filter_choice != "all":
+            base_rows = [r for r in base_rows if r.get("status") == filter_choice]
+        rows = base_rows
+    else:
+        rows = get_sentences_by_status(filter_choice if filter_choice != "all" else None)
+
+    if rows:
+        view_counts = [r.get("view_count", 0) for r in rows]
+        lap_count = min(view_counts) if view_counts else 0
+        st.caption(
+            f"📊 {len(rows)}件 / 周回数(最小閲覧回数): **{lap_count}**　|　最大閲覧: {max(view_counts) if view_counts else 0}回"
+        )
 
     if not rows:
-        st.info("履歴がありません。" if not search_query else "検索結果が見つかりませんでした。")
+        st.info("該当するカードがありません。" if (search_query or filter_choice != "all") else "履歴がありません。")
         st.session_state.pop("card_mode_rows", None)
     elif st.session_state.get("card_mode_rows") is not None:
         # ── フラッシュカードモード ──
@@ -310,15 +344,24 @@ with tab_hist:
         idx = max(0, min(idx, len(card_rows) - 1))
         row = card_rows[idx]
 
+        # 閲覧回数の自動カウント(同じカードは同一セッションで1回のみ)
+        if st.session_state.get("last_viewed_card_id") != row["id"]:
+            increment_view_count(row["id"])
+            row["view_count"] = row.get("view_count", 0) + 1
+            st.session_state.last_viewed_card_id = row["id"]
+
         col_back, col_count = st.columns([1, 2])
         with col_back:
             if st.button("← 一覧に戻る", key="back_to_list"):
                 st.session_state.pop("card_mode_rows", None)
                 st.session_state.pop("card_index", None)
+                st.session_state.pop("last_viewed_card_id", None)
                 st.rerun()
         with col_count:
             st.markdown(
-                f"<div style='text-align:right; padding-top:8px; color:#666;'>{idx + 1} / {len(card_rows)}</div>",
+                f"<div style='text-align:right; padding-top:8px; color:#666;'>"
+                f"{idx + 1} / {len(card_rows)}　|　閲覧 {row.get('view_count', 0)}回"
+                f"</div>",
                 unsafe_allow_html=True,
             )
 
@@ -363,6 +406,40 @@ with tab_hist:
 
         _speak_button(row["english"])
 
+        current_status = row.get("status", "new")
+        st.caption(f"現在のステータス: **{STATUS_LABEL.get(current_status, current_status)}**")
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            if st.button(
+                "🆕 新規",
+                key="set_new",
+                disabled=(current_status == "new"),
+                use_container_width=True,
+            ):
+                update_status(row["id"], "new")
+                row["status"] = "new"
+                st.rerun()
+        with col_s2:
+            if st.button(
+                "🔁 復習する",
+                key="set_review",
+                disabled=(current_status == "review"),
+                use_container_width=True,
+            ):
+                update_status(row["id"], "review")
+                row["status"] = "review"
+                st.rerun()
+        with col_s3:
+            if st.button(
+                "✅ 習得済み",
+                key="set_mastered",
+                disabled=(current_status == "mastered"),
+                use_container_width=True,
+            ):
+                update_status(row["id"], "mastered")
+                row["status"] = "mastered"
+                st.rerun()
+
         col_prev, col_next = st.columns(2)
         with col_prev:
             if st.button("← 前のカード", key="prev_card", disabled=(idx == 0), use_container_width=True):
@@ -381,10 +458,14 @@ with tab_hist:
                 st.rerun()
     else:
         # ── 単語リスト表示 ──
-        st.caption(f"{len(rows)} 件　|　タップでカードを開く")
+        st.caption("タップでカードを開く")
         for i, row in enumerate(rows):
             words_display = " / ".join(row["words"].split(","))
-            if st.button(f"📇  {words_display}", key=f"open_card_{row['id']}", use_container_width=True):
+            status_icon = {"new": "🆕", "review": "🔁", "mastered": "✅"}.get(row.get("status", "new"), "🆕")
+            view_n = row.get("view_count", 0)
+            label = f"{status_icon}  {words_display}　({view_n}回)"
+            if st.button(label, key=f"open_card_{row['id']}", use_container_width=True):
                 st.session_state.card_mode_rows = rows
                 st.session_state.card_index = i
+                st.session_state.pop("last_viewed_card_id", None)
                 st.rerun()
