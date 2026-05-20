@@ -3,12 +3,15 @@
 
 import base64
 import hashlib
+import html
+import json
 import os
 import re
 
 import anthropic
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.components.v1 import html as st_html
 
 from database import delete_sentence, get_all_sentences, init_db, save_sentence, search_sentences
 
@@ -24,7 +27,7 @@ SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC80
 - 指定された単語をすべて文法的に自然な形で組み込む
 - 例文はメール、会議、プレゼンテーション等のビジネス場面を想定する
 - 和訳は自然な日本語ビジネス表現にする
-- 解説は各単語のコアな意味とビジネス文脈での使い方を簡潔に説明する"""
+- 解説では各単語ごとに「発音記号(IPA表記)・コア意味・ビジネス文脈での使い方」を箇条書きで簡潔に示す"""
 
 
 def _parse_response(text: str) -> dict[str, str]:
@@ -54,7 +57,12 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 （ここに日本語訳）
 
 【解説】
-（各単語の意味とビジネス文脈での使い方）"""
+（指定単語ごとに、以下の形式で1行ずつ箇条書き）
+- 単語 /IPA発音記号/: コア意味。ビジネス文脈での使い方
+
+例:
+- negotiate /nɪˈɡoʊʃieɪt/: 交渉する。商談や条件調整で使う基本動詞。
+- deadline /ˈdedlaɪn/: 締切。タスク完了の最終期限を示す。"""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -214,34 +222,108 @@ with tab_gen:
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 
+def _speak_button(text: str) -> None:
+    """ブラウザ標準TTSで英文を読み上げるボタンを描画。"""
+    safe_text = json.dumps(text)
+    component_html = f"""
+    <div style="margin: 8px 0;">
+      <button id="speak-btn" style="
+        background: #ff4b4b; color: white; border: none;
+        padding: 8px 16px; border-radius: 6px; font-size: 14px;
+        cursor: pointer; font-weight: 600;
+      ">🔊 英文を聞く</button>
+    </div>
+    <script>
+      const btn = document.getElementById('speak-btn');
+      btn.addEventListener('click', () => {{
+        const u = new SpeechSynthesisUtterance({safe_text});
+        u.lang = 'en-US';
+        u.rate = 0.95;
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+      }});
+    </script>
+    """
+    st_html(component_html, height=50)
+
+
 # ── タブ2: 履歴 ───────────────────────────────────────────
 with tab_hist:
-    st.subheader("生成履歴")
-
     search_query = st.text_input(
-        "キーワード検索（英文・和訳・単語から横断）",
+        "キーワード検索（単語から）",
         placeholder="例: negotiate",
+        key="hist_search",
     )
 
     rows = search_sentences(search_query) if search_query else get_all_sentences()
 
     if not rows:
         st.info("履歴がありません。" if not search_query else "検索結果が見つかりませんでした。")
+        st.session_state.pop("card_mode_rows", None)
+    elif st.session_state.get("card_mode_rows") is not None:
+        # ── フラッシュカードモード ──
+        card_rows = st.session_state.card_mode_rows
+        idx = st.session_state.get("card_index", 0)
+        idx = max(0, min(idx, len(card_rows) - 1))
+        row = card_rows[idx]
+
+        col_back, col_count = st.columns([1, 2])
+        with col_back:
+            if st.button("← 一覧に戻る", key="back_to_list"):
+                st.session_state.pop("card_mode_rows", None)
+                st.session_state.pop("card_index", None)
+                st.rerun()
+        with col_count:
+            st.markdown(
+                f"<div style='text-align:right; padding-top:8px; color:#666;'>{idx + 1} / {len(card_rows)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        words_display = " / ".join(row["words"].split(","))
+        st.markdown(
+            f"""
+            <div style='
+                background: #fff; border: 2px solid #ff4b4b;
+                border-radius: 12px; padding: 20px; margin: 16px 0;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            '>
+              <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
+              <div style='font-size:14px; color:#333; margin-bottom:16px;'>{html.escape(words_display)}</div>
+              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
+              <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["english"])}</div>
+              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
+              <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
+              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
+              <div style='font-size:14px; line-height:1.7; white-space:pre-wrap;'>{html.escape(row["explanation"])}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        _speak_button(row["english"])
+
+        col_prev, col_next = st.columns(2)
+        with col_prev:
+            if st.button("← 前のカード", key="prev_card", disabled=(idx == 0), use_container_width=True):
+                st.session_state.card_index = idx - 1
+                st.rerun()
+        with col_next:
+            if st.button("次のカード →", key="next_card", disabled=(idx == len(card_rows) - 1), use_container_width=True):
+                st.session_state.card_index = idx + 1
+                st.rerun()
+
+        with st.expander("⚙️ このカードを削除"):
+            if st.button("削除する", key=f"delete_card_{row['id']}", type="secondary"):
+                delete_sentence(row["id"])
+                st.session_state.pop("card_mode_rows", None)
+                st.session_state.pop("card_index", None)
+                st.rerun()
     else:
-        st.caption(f"{len(rows)} 件")
-        for row in rows:
+        # ── 単語リスト表示 ──
+        st.caption(f"{len(rows)} 件　|　タップでカードを開く")
+        for i, row in enumerate(rows):
             words_display = " / ".join(row["words"].split(","))
-            preview = row["english"][:60] + "…" if len(row["english"]) > 60 else row["english"]
-            label = f"🕐 {row['created_at']}　|　{words_display}　|　{preview}"
-
-            with st.expander(label):
-                st.markdown("**【英文】**")
-                st.write(row["english"])
-                st.markdown("**【和訳】**")
-                st.write(row["japanese"])
-                st.markdown("**【解説】**")
-                st.write(row["explanation"])
-
-                if st.button("削除", key=f"delete_{row['id']}", type="secondary"):
-                    delete_sentence(row["id"])
-                    st.rerun()
+            if st.button(f"📇  {words_display}", key=f"open_card_{row['id']}", use_container_width=True):
+                st.session_state.card_mode_rows = rows
+                st.session_state.card_index = i
+                st.rerun()
