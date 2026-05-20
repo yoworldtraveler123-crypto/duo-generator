@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DUO 3.0風ビジネス英語例文ジェネレーター"""
+"""単語ジェネ - ビジネス英単語から例文を生成するCLIツール"""
 
 import sys
 import anthropic

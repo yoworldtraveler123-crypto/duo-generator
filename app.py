@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DUO 3.0風 ビジネス英語例文ジェネレーター - Streamlit Web App"""
+"""単語ジェネ - ビジネス英単語から例文を生成するStreamlit Web App"""
 
 import base64
 import hashlib
@@ -138,8 +138,9 @@ def extract_words_from_image(image_bytes: bytes, media_type: str) -> list[str]:
 
 
 # ── ページ設定 ────────────────────────────────────────────
-st.set_page_config(page_title="DUO 3.0風 ビジネス英語ジェネレーター", page_icon="📚", layout="wide")
-st.title("📚 DUO 3.0風 ビジネス英語例文ジェネレーター")
+st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide")
+st.title("📚 単語ジェネ")
+st.caption("ビジネス英単語を入れて例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
 
 init_db()
 
