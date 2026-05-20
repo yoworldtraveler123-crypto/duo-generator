@@ -223,32 +223,26 @@ with tab_gen:
                 st.error(f"エラーが発生しました: {e}")
 
 def _speak_button(text: str) -> None:
-    """ブラウザ標準TTSで英文を読み上げるボタンを描画(高品質ボイス優先)。"""
+    """ブラウザ標準TTSで英文を読み上げるボタンを描画。良質ボイスを自動選択。"""
     safe_text = json.dumps(text)
     component_html = f"""
-    <div style="margin: 8px 0; display: flex; align-items: center; gap: 8px;">
+    <div style="margin: 8px 0;">
       <button id="speak-btn" style="
         background: #ff4b4b; color: white; border: none;
         padding: 8px 16px; border-radius: 6px; font-size: 14px;
         cursor: pointer; font-weight: 600;
       ">🔊 英文を聞く</button>
-      <select id="voice-select" style="
-        padding: 6px 8px; border-radius: 6px; border: 1px solid #ccc;
-        font-size: 13px; max-width: 220px;
-      "></select>
     </div>
     <script>
       const PREFERRED = [
-        'Ava (Premium)', 'Ava (Enhanced)', 'Allison (Premium)', 'Allison (Enhanced)',
-        'Samantha (Enhanced)', 'Samantha', 'Karen (Enhanced)', 'Karen',
-        'Daniel (Enhanced)', 'Daniel', 'Google US English', 'Google UK English Female',
-        'Microsoft Aria Online', 'Microsoft Jenny Online', 'Microsoft Guy Online',
-        'Microsoft Ava', 'Microsoft Andrew', 'Premium', 'Enhanced', 'Neural'
+        'Ava (Premium)', 'Allison (Premium)', 'Samantha (Enhanced)', 'Samantha',
+        'Ava (Enhanced)', 'Allison (Enhanced)', 'Karen', 'Daniel',
+        'Google US English', 'Microsoft Aria Online', 'Microsoft Jenny Online',
+        'Microsoft Ava', 'Premium', 'Enhanced', 'Neural'
       ];
-      const sel = document.getElementById('voice-select');
-      const btn = document.getElementById('speak-btn');
 
-      function pickBest(voices) {{
+      function pickBest() {{
+        const voices = window.speechSynthesis.getVoices();
         const en = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
         for (const key of PREFERRED) {{
           const found = en.find(v => v.name && v.name.includes(key));
@@ -257,27 +251,12 @@ def _speak_button(text: str) -> None:
         return en.find(v => v.lang === 'en-US') || en[0] || voices[0];
       }}
 
-      function refreshVoices() {{
-        const voices = window.speechSynthesis.getVoices();
-        if (!voices.length) return;
-        sel.innerHTML = '';
-        const enVoices = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
-        const best = pickBest(voices);
-        enVoices.forEach(v => {{
-          const opt = document.createElement('option');
-          opt.value = v.name;
-          opt.textContent = v.name + ' (' + v.lang + ')';
-          if (best && v.name === best.name) opt.selected = true;
-          sel.appendChild(opt);
-        }});
-      }}
+      // 一度声をロードして準備
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
 
-      refreshVoices();
-      window.speechSynthesis.onvoiceschanged = refreshVoices;
-
-      btn.addEventListener('click', () => {{
-        const voices = window.speechSynthesis.getVoices();
-        const chosen = voices.find(v => v.name === sel.value) || pickBest(voices);
+      document.getElementById('speak-btn').addEventListener('click', () => {{
+        const chosen = pickBest();
         const u = new SpeechSynthesisUtterance({safe_text});
         if (chosen) {{
           u.voice = chosen;
@@ -292,7 +271,7 @@ def _speak_button(text: str) -> None:
       }});
     </script>
     """
-    st_html(component_html, height=60)
+    st_html(component_html, height=50)
 
 
 # ── タブ2: 履歴 ───────────────────────────────────────────
