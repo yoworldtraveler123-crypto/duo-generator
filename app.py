@@ -223,6 +223,21 @@ with tab_gen:
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 
+def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
+    """解説テキストから 単語→IPA のマップを抽出する。"""
+    out: dict[str, str] = {}
+    for line in explanation.splitlines():
+        m = re.search(r"([a-zA-Z][a-zA-Z\-']*)\s*/([^/]+)/", line)
+        if m:
+            out[m.group(1).lower()] = m.group(2).strip()
+    return out
+
+
+def _strip_ipa(text: str) -> str:
+    """解説文中の `word /IPA/` から /IPA/ 部分だけ取り除く。"""
+    return re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/", r"\1", text)
+
+
 def _speak_button(text: str) -> None:
     """ブラウザ標準TTSで英文を読み上げるボタンを描画。良質ボイスを自動選択。"""
     safe_text = json.dumps(text)
@@ -307,7 +322,25 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-        words_display = " / ".join(row["words"].split(","))
+        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+        pronunciations = _parse_word_pronunciations(row["explanation"])
+        explanation_no_ipa = _strip_ipa(row["explanation"])
+
+        words_html_rows = ""
+        for w in words_list:
+            ipa = pronunciations.get(w.lower(), "")
+            ipa_html = (
+                f"<span style='color:#888; font-size:14px; margin-left:8px;'>/{html.escape(ipa)}/</span>"
+                if ipa
+                else ""
+            )
+            words_html_rows += (
+                f"<div style='margin-bottom:4px;'>"
+                f"<span style='font-weight:600; font-size:16px; color:#222;'>{html.escape(w)}</span>"
+                f"{ipa_html}"
+                f"</div>"
+            )
+
         st.markdown(
             f"""
             <div style='
@@ -316,13 +349,13 @@ with tab_hist:
                 box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             '>
               <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
-              <div style='font-size:14px; color:#333; margin-bottom:16px;'>{html.escape(words_display)}</div>
+              <div style='margin-bottom:16px;'>{words_html_rows}</div>
               <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
               <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["english"])}</div>
               <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
               <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
               <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
-              <div style='font-size:14px; line-height:1.7; white-space:pre-wrap;'>{html.escape(row["explanation"])}</div>
+              <div style='font-size:14px; line-height:1.7; white-space:pre-wrap;'>{html.escape(explanation_no_ipa)}</div>
             </div>
             """,
             unsafe_allow_html=True,
