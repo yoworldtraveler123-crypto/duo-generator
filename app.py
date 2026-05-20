@@ -247,6 +247,35 @@ def _strip_ipa(text: str) -> str:
     return re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/", r"\1", text)
 
 
+def _format_explanation_html(explanation: str) -> str:
+    """解説を綺麗なHTMLリストに整形(LLM出力のMarkdown混在を吸収)。"""
+    items: list[str] = []
+    for raw in explanation.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-•・*]+\s*", "", line)
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        line = re.sub(r"\*(.+?)\*", r"\1", line)
+        m = re.match(r"^([^:：]{1,80})[:：]\s*(.+)$", line)
+        if m:
+            head = m.group(1).strip()
+            body = m.group(2).strip()
+            items.append(
+                "<li style='margin-bottom:8px; line-height:1.6;'>"
+                f"<span style='font-weight:600;'>{html.escape(head)}</span>"
+                f"<span>: {html.escape(body)}</span>"
+                "</li>"
+            )
+        else:
+            items.append(
+                f"<li style='margin-bottom:8px; line-height:1.6;'>{html.escape(line)}</li>"
+            )
+    if not items:
+        return f"<div style='line-height:1.6;'>{html.escape(explanation)}</div>"
+    return f"<ul style='margin:0; padding-left:18px;'>{''.join(items)}</ul>"
+
+
 def _speak_button(text: str) -> None:
     """ブラウザ標準TTSで英文を読み上げるボタンを描画。良質ボイスを自動選択。"""
     safe_text = json.dumps(text)
@@ -369,20 +398,21 @@ with tab_hist:
         pronunciations = _parse_word_pronunciations(row["explanation"])
         explanation_no_ipa = _strip_ipa(row["explanation"])
 
-        words_html_rows = ""
+        words_inline = ""
         for w in words_list:
             ipa = pronunciations.get(w.lower(), "")
             ipa_html = (
-                f"<span style='color:#888; font-size:14px; margin-left:8px;'>/{html.escape(ipa)}/</span>"
+                f"<span style='color:#888; font-size:13px; margin-left:4px;'>/{html.escape(ipa)}/</span>"
                 if ipa
                 else ""
             )
-            words_html_rows += (
-                f"<div style='margin-bottom:4px;'>"
-                f"<span style='font-weight:600; font-size:16px; color:#222;'>{html.escape(w)}</span>"
+            words_inline += (
+                f"<span style='display:inline-block; margin-right:14px; white-space:nowrap;'>"
+                f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
                 f"{ipa_html}"
-                f"</div>"
+                f"</span>"
             )
+        words_html_rows = f"<div style='line-height:1.8;'>{words_inline}</div>"
 
         st.markdown(
             f"""
@@ -398,7 +428,7 @@ with tab_hist:
               <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
               <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
               <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
-              <div style='font-size:14px; line-height:1.7; white-space:pre-wrap;'>{html.escape(explanation_no_ipa)}</div>
+              <div style='font-size:14px;'>{_format_explanation_html(explanation_no_ipa)}</div>
             </div>
             """,
             unsafe_allow_html=True,
