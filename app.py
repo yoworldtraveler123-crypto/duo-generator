@@ -406,48 +406,31 @@ with tab_hist:
 
         _speak_button(row["english"])
 
-        current_status = row.get("status", "new")
-        st.caption(f"現在のステータス: **{STATUS_LABEL.get(current_status, current_status)}**")
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            if st.button(
-                "🆕 新規",
-                key="set_new",
-                disabled=(current_status == "new"),
-                use_container_width=True,
-            ):
-                update_status(row["id"], "new")
-                row["status"] = "new"
-                st.rerun()
-        with col_s2:
-            if st.button(
-                "🔁 復習する",
-                key="set_review",
-                disabled=(current_status == "review"),
-                use_container_width=True,
-            ):
+        is_last = idx == len(card_rows) - 1
+        col_ng, col_ok = st.columns(2)
+        with col_ng:
+            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
                 update_status(row["id"], "review")
-                row["status"] = "review"
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
                 st.rerun()
-        with col_s3:
-            if st.button(
-                "✅ 習得済み",
-                key="set_mastered",
-                disabled=(current_status == "mastered"),
-                use_container_width=True,
-            ):
+        with col_ok:
+            if st.button("✅ 理解した", key="mark_mastered", type="primary", use_container_width=True):
                 update_status(row["id"], "mastered")
-                row["status"] = "mastered"
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
                 st.rerun()
 
-        col_prev, col_next = st.columns(2)
-        with col_prev:
-            if st.button("← 前のカード", key="prev_card", disabled=(idx == 0), use_container_width=True):
-                st.session_state.card_index = idx - 1
-                st.rerun()
-        with col_next:
-            if st.button("次のカード →", key="next_card", disabled=(idx == len(card_rows) - 1), use_container_width=True):
-                st.session_state.card_index = idx + 1
+        if st.session_state.get("card_finished"):
+            st.success("🎉 このセットの最後のカードでした!")
+            if st.button("最初から", key="restart_deck", use_container_width=True):
+                st.session_state.card_index = 0
+                st.session_state.card_finished = False
+                st.session_state.pop("last_viewed_card_id", None)
                 st.rerun()
 
         with st.expander("⚙️ このカードを削除"):
@@ -467,5 +450,6 @@ with tab_hist:
             if st.button(label, key=f"open_card_{row['id']}", use_container_width=True):
                 st.session_state.card_mode_rows = rows
                 st.session_state.card_index = i
+                st.session_state.card_finished = False
                 st.session_state.pop("last_viewed_card_id", None)
                 st.rerun()
