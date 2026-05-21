@@ -323,8 +323,23 @@ with tab_gen:
                         st.markdown("#### 【解説】")
                         st.info(result["explanation"])
 
-                    save_sentence(words, result["english"], result["japanese"], result["explanation"])
-                    st.caption("💾 履歴に保存しました")
+                    new_id = save_sentence(words, result["english"], result["japanese"], result["explanation"])
+
+                    # 先回り生成: 音声 + 各単語の画像をDBに保存しておく(カード遷移を高速化)
+                    with st.spinner("音声・画像を準備中..."):
+                        try:
+                            audio = _openai_tts(result["english"])
+                            save_audio_blob(new_id, audio)
+                        except Exception:
+                            pass
+                        if os.getenv("UNSPLASH_ACCESS_KEY"):
+                            for w in words:
+                                try:
+                                    get_or_fetch_images(new_id, w)
+                                except Exception:
+                                    pass
+
+                    st.caption("💾 履歴に保存しました(音声・画像も準備済み)")
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 
@@ -594,21 +609,26 @@ with tab_hist:
             words_block_html = ""
             for w in words_list:
                 ipa = pronunciations.get(w.lower(), "")
-                ipa_html = (
-                    f"<span style='color:#888; font-size:13px;'>/{html.escape(ipa)}/</span>"
-                    if ipa
-                    else ""
-                )
                 syns = synonyms.get(w.lower(), [])
-                syn_html = (
-                    f"<span style='color:#9ca3af; font-size:12px;'> ≈ {html.escape(', '.join(syns))}</span>"
-                    if syns
+                meta_parts = []
+                if ipa:
+                    meta_parts.append(
+                        f"<span style='color:#4b5563;'>/{html.escape(ipa)}/</span>"
+                    )
+                if syns:
+                    meta_parts.append(
+                        f"<span style='color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
+                    )
+                meta_html = (
+                    f"<div style='font-size:13px; color:#4b5563; margin-top:1px; "
+                    f"display:flex; flex-wrap:wrap; gap:10px;'>{''.join(meta_parts)}</div>"
+                    if meta_parts
                     else ""
                 )
                 words_block_html += (
-                    f"<div style='margin-bottom:4px; line-height:1.5;'>"
-                    f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
-                    f" {ipa_html}{syn_html}"
+                    f"<div style='margin-bottom:10px;'>"
+                    f"<div style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</div>"
+                    f"{meta_html}"
                     f"</div>"
                 )
             words_html_rows = f"<div>{words_block_html}</div>"
