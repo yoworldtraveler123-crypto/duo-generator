@@ -7,6 +7,8 @@ import html
 import json
 import os
 import re
+import urllib.parse
+import urllib.request
 
 import anthropic
 import streamlit as st
@@ -17,10 +19,12 @@ from database import (
     delete_sentence,
     get_all_sentences,
     get_audio_blob,
+    get_image_data,
     get_sentences_by_status,
     increment_view_count,
     init_db,
     save_audio_blob,
+    save_image_data,
     save_sentence,
     search_sentences,
     update_status,
@@ -32,6 +36,8 @@ if "ANTHROPIC_API_KEY" in st.secrets and not os.getenv("ANTHROPIC_API_KEY"):
     os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
 if "OPENAI_API_KEY" in st.secrets and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+if "UNSPLASH_ACCESS_KEY" in st.secrets and not os.getenv("UNSPLASH_ACCESS_KEY"):
+    os.environ["UNSPLASH_ACCESS_KEY"] = st.secrets["UNSPLASH_ACCESS_KEY"]
 
 OPENAI_TTS_VOICE = "nova"
 OPENAI_TTS_MODEL = "tts-1"
@@ -60,6 +66,48 @@ def get_or_generate_audio(row_id: int, text: str) -> bytes:
     audio = _openai_tts(text)
     save_audio_blob(row_id, audio)
     return audio
+
+
+@st.cache_data(show_spinner=False)
+def _fetch_unsplash_images(word: str, count: int = 5) -> list[dict]:
+    """Unsplash API で単語に紐づく画像情報を取得。"""
+    key = os.getenv("UNSPLASH_ACCESS_KEY")
+    if not key:
+        return []
+    url = (
+        "https://api.unsplash.com/search/photos?"
+        f"query={urllib.parse.quote(word)}&per_page={count}&orientation=landscape"
+    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Client-ID {key}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.load(resp)
+    return [
+        {
+            "thumb": r["urls"]["thumb"],
+            "small": r["urls"]["small"],
+            "alt": r.get("alt_description") or word,
+            "photographer": r["user"]["name"],
+            "photographer_url": r["user"]["links"]["html"],
+            "image_url": r["links"]["html"],
+        }
+        for r in data.get("results", [])
+    ]
+
+
+def get_or_fetch_images(row_id: int, word: str) -> list[dict]:
+    """DBキャッシュ優先で画像情報を返す。未取得ならUnsplashで検索して保存。"""
+    all_data = get_image_data(row_id)
+    key = word.lower()
+    if key in all_data and all_data[key]:
+        return all_data[key]
+    try:
+        results = _fetch_unsplash_images(word)
+    except Exception:
+        return []
+    if results:
+        all_data[key] = results
+        save_image_data(row_id, all_data)
+    return results
 
 SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
 
@@ -543,6 +591,21 @@ with tab_hist:
                 """,
                 unsafe_allow_html=True,
             )
+
+            # ── 単語ごとのイメージギャラリー ──
+            if os.getenv("UNSPLASH_ACCESS_KEY"):
+                for w in words_list:
+                    with st.expander(f"🖼️  {w} のイメージを見る"):
+                        with st.spinner(""):
+                            images = get_or_fetch_images(row["id"], w)
+                        if not images:
+                            st.caption("画像が見つかりませんでした。")
+                        else:
+                            cols = st.columns(len(images))
+                            for c, img in zip(cols, images):
+                                with c:
+                                    st.image(img["thumb"], use_container_width=True)
+                                    st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
 
             is_last = idx == len(card_rows) - 1
             col_ng, col_ok = st.columns(2)

@@ -29,6 +29,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE sentences ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0")
         if "audio_blob" not in cols:
             conn.execute("ALTER TABLE sentences ADD COLUMN audio_blob BLOB")
+        if "image_data" not in cols:
+            conn.execute("ALTER TABLE sentences ADD COLUMN image_data TEXT")
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str) -> int:
@@ -87,6 +89,28 @@ def get_audio_blob(row_id: int) -> bytes | None:
 def save_audio_blob(row_id: int, audio_bytes: bytes) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("UPDATE sentences SET audio_blob = ? WHERE id = ?", (audio_bytes, row_id))
+
+
+def get_image_data(row_id: int) -> dict:
+    """指定IDの画像URLマップを取得。未保存なら空辞書。"""
+    import json as _json
+
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT image_data FROM sentences WHERE id = ?", (row_id,)).fetchone()
+    if not row or not row[0]:
+        return {}
+    try:
+        return _json.loads(row[0])
+    except (ValueError, TypeError):
+        return {}
+
+
+def save_image_data(row_id: int, data: dict) -> None:
+    """単語→画像情報リストのマップをJSONで保存。"""
+    import json as _json
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE sentences SET image_data = ? WHERE id = ?", (_json.dumps(data), row_id))
 
 
 def get_sentences_by_status(status: str | None) -> list[dict]:
