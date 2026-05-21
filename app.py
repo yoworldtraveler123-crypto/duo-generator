@@ -247,6 +247,21 @@ def _strip_ipa(text: str) -> str:
     return re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/", r"\1", text)
 
 
+def _highlight_target_words(english: str, words: list[str]) -> str:
+    """英文中の学習対象単語(語形変化込み)を赤色強調する。HTML文字列を返す。"""
+    clean_words = sorted({w.strip() for w in words if w.strip()}, key=len, reverse=True)
+    escaped = html.escape(english)
+    if not clean_words:
+        return escaped
+    suffix = "(s|es|ed|ing|er|est|ly|ies|ied|ier|iest|d)?"
+    alt = "|".join(re.escape(w) for w in clean_words)
+    pattern = re.compile(rf"\b({alt}){suffix}\b", re.IGNORECASE)
+    return pattern.sub(
+        lambda m: f"<span style='color:#ff4b4b; font-weight:700;'>{m.group(0)}</span>",
+        escaped,
+    )
+
+
 def _format_explanation_html(explanation: str) -> str:
     """解説を綺麗なHTMLリストに整形(LLM出力のMarkdown混在を吸収)。"""
     items: list[str] = []
@@ -276,9 +291,35 @@ def _format_explanation_html(explanation: str) -> str:
     return f"<ul style='margin:0; padding-left:18px;'>{''.join(items)}</ul>"
 
 
-def _speak_button(text: str) -> None:
-    """ブラウザ標準TTSで英文を読み上げるボタンを描画。良質ボイスを自動選択。"""
+def _speak_button(text: str, auto_play: bool = False) -> None:
+    """ブラウザ標準TTSで英文を読み上げるボタンを描画。良質ボイスを自動選択。
+
+    auto_play=True なら iframe ロード時に1回自動再生を試みる。
+    """
     safe_text = json.dumps(text)
+    auto_block = ""
+    if auto_play:
+        auto_block = f"""
+        (function tryAuto(retry) {{
+          const voices = window.speechSynthesis.getVoices();
+          if (!voices.length && retry < 20) {{
+            setTimeout(() => tryAuto(retry + 1), 100);
+            return;
+          }}
+          const chosen = pickBest();
+          const u = new SpeechSynthesisUtterance({safe_text});
+          if (chosen) {{
+            u.voice = chosen;
+            u.lang = chosen.lang;
+          }} else {{
+            u.lang = 'en-US';
+          }}
+          u.rate = 0.95;
+          u.pitch = 1.0;
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(u);
+        }})(0);
+        """
     component_html = f"""
     <div style="margin: 8px 0;">
       <button id="speak-btn" style="
@@ -305,7 +346,6 @@ def _speak_button(text: str) -> None:
         return en.find(v => v.lang === 'en-US') || en[0] || voices[0];
       }}
 
-      // 一度声をロードして準備
       window.speechSynthesis.getVoices();
       window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
 
@@ -323,6 +363,8 @@ def _speak_button(text: str) -> None:
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(u);
       }});
+
+      {auto_block}
     </script>
     """
     st_html(component_html, height=50)
@@ -373,12 +415,13 @@ with tab_hist:
         idx = max(0, min(idx, len(card_rows) - 1))
         row = card_rows[idx]
 
-        # 閲覧回数の自動カウント + カード変更時は詳細表示をリセット
+        # 閲覧回数の自動カウント + カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
         if st.session_state.get("last_viewed_card_id") != row["id"]:
             increment_view_count(row["id"])
             row["view_count"] = row.get("view_count", 0) + 1
             st.session_state.last_viewed_card_id = row["id"]
             st.session_state.card_revealed = False
+            st.session_state.autoplay_pending = True
 
         col_back, col_count = st.columns([1, 2])
         with col_back:
@@ -396,6 +439,8 @@ with tab_hist:
             )
 
         revealed = st.session_state.get("card_revealed", False)
+        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+        highlighted_english = _highlight_target_words(row["english"], words_list)
 
         if not revealed:
             # ── 表面: 英文のみ ──
@@ -407,19 +452,19 @@ with tab_hist:
                     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
                 '>
                   <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
-                  <div style='font-size:18px; line-height:1.6;'>{html.escape(row["english"])}</div>
+                  <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            _speak_button(row["english"])
+            should_autoplay = st.session_state.pop("autoplay_pending", False)
+            _speak_button(row["english"], auto_play=should_autoplay)
 
             if st.button("詳細を見る", key="reveal_card", type="primary", use_container_width=True):
                 st.session_state.card_revealed = True
                 st.rerun()
         else:
             # ── 裏面: 単語+IPA + 和訳 + 解説 ──
-            words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
             pronunciations = _parse_word_pronunciations(row["explanation"])
             explanation_no_ipa = _strip_ipa(row["explanation"])
 
@@ -449,7 +494,7 @@ with tab_hist:
                   <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
                   <div style='margin-bottom:16px;'>{words_html_rows}</div>
                   <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
-                  <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["english"])}</div>
+                  <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{highlighted_english}</div>
                   <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
                   <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
                   <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
