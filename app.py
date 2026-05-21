@@ -165,10 +165,10 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
     return _parse_response(text)
 
 
-EXTRACTION_PROMPT = """この画像は英語学習アプリ「abceed」のスクリーンショットです。
+EXTRACTION_PROMPT = """この画像は英語学習アプリのスクリーンショットです。
 画像内で「色付き(オレンジ・赤・黄色など)で強調表示されている英単語」を抽出してください。
 
-abceedでは、覚えるべき重要語が文章中でオレンジや赤などのアクセントカラーで強調表示されます。
+英語学習アプリでは、覚えるべき重要語が文章中でオレンジや赤などのアクセントカラーで強調表示されることが多いです。
 通常の本文(黒・グレー)とは色が違う単語のみが抽出対象です。
 
 判定基準(優先順):
@@ -239,9 +239,9 @@ tab_gen, tab_hist = st.tabs(["生成", "履歴"])
 with tab_gen:
     st.subheader("英単語を入力して例文を生成")
 
-    with st.expander("📷 画像から苦手単語を抽出(abceedスクショ対応)"):
+    with st.expander("📷 画像から単語を抽出"):
         uploaded = st.file_uploader(
-            "abceedの苦手単語リストなどのスクショをアップロード",
+            "単語リストなどのスクリーンショットをアップロード",
             type=["png", "jpg", "jpeg", "webp"],
             key="img_upload",
         )
@@ -576,28 +576,35 @@ with tab_hist:
                 f"""
                 <div style='
                     background: #fff; border: 2px solid #ff4b4b;
-                    border-radius: 12px; padding: 20px; margin: 16px 0;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                    border-radius: 10px; padding: 14px 16px; margin: 8px 0;
+                    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
                 '>
-                  <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
-                  <div style='margin-bottom:16px;'>{words_html_rows}</div>
-                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
-                  <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{highlighted_english}</div>
-                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
-                  <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
-                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
-                  <div style='font-size:14px;'>{_format_explanation_html(explanation_no_ipa)}</div>
+                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
+                  <div style='margin-bottom:10px;'>{words_html_rows}</div>
+                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>英文</div>
+                  <div style='font-size:17px; line-height:1.5; margin-bottom:10px;'>{highlighted_english}</div>
+                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
+                  <div style='font-size:14px; line-height:1.5; margin-bottom:10px;'>{html.escape(row["japanese"])}</div>
+                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>解説</div>
+                  <div style='font-size:13px;'>{_format_explanation_html(explanation_no_ipa)}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # ── 単語ごとのイメージギャラリー ──
-            if os.getenv("UNSPLASH_ACCESS_KEY"):
-                for w in words_list:
-                    with st.expander(f"🖼️  {w} のイメージを見る"):
+            # ── 単語イメージギャラリー(1エキスパンダー+単語選択) ──
+            if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
+                with st.expander("🖼️  単語のイメージを見る"):
+                    selected_word = st.radio(
+                        "単語を選ぶ",
+                        words_list,
+                        horizontal=True,
+                        key=f"img_word_{row['id']}",
+                        label_visibility="collapsed",
+                    )
+                    if selected_word:
                         with st.spinner(""):
-                            images = get_or_fetch_images(row["id"], w)
+                            images = get_or_fetch_images(row["id"], selected_word)
                         if not images:
                             st.caption("画像が見つかりませんでした。")
                         else:
