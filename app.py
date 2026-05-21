@@ -537,9 +537,9 @@ with tab_hist:
             st.markdown(
                 f"""
                 <div style='
-                    background: #fff; border: 2px solid #ff4b4b;
+                    background: #fff; border: 1px solid #e5e7eb;
                     border-radius: 12px; padding: 24px; margin: 16px 0;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
                 '>
                   <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
                   <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
@@ -575,9 +575,9 @@ with tab_hist:
             st.markdown(
                 f"""
                 <div style='
-                    background: #fff; border: 2px solid #ff4b4b;
+                    background: #fff; border: 1px solid #e5e7eb;
                     border-radius: 10px; padding: 14px 16px; margin: 8px 0;
-                    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
                 '>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
                   <div style='margin-bottom:10px;'>{words_html_rows}</div>
@@ -592,27 +592,30 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-            # ── 単語イメージギャラリー(1エキスパンダー+単語選択) ──
+            # ── 単語イメージギャラリー(常時表示・単語切替) ──
             if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
-                with st.expander("🖼️  単語のイメージを見る"):
-                    selected_word = st.radio(
-                        "単語を選ぶ",
-                        words_list,
-                        horizontal=True,
-                        key=f"img_word_{row['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if selected_word:
-                        with st.spinner(""):
-                            images = get_or_fetch_images(row["id"], selected_word)
-                        if not images:
-                            st.caption("画像が見つかりませんでした。")
-                        else:
-                            cols = st.columns(len(images))
-                            for c, img in zip(cols, images):
-                                with c:
-                                    st.image(img["thumb"], use_container_width=True)
-                                    st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
+                st.markdown(
+                    "<div style='color:#999; font-size:11px; margin-top:8px; margin-bottom:4px;'>🖼️ 単語のイメージ</div>",
+                    unsafe_allow_html=True,
+                )
+                selected_word = st.radio(
+                    "単語",
+                    words_list,
+                    horizontal=True,
+                    key=f"img_word_{row['id']}",
+                    label_visibility="collapsed",
+                )
+                if selected_word:
+                    with st.spinner(""):
+                        images = get_or_fetch_images(row["id"], selected_word)
+                    if not images:
+                        st.caption("画像が見つかりませんでした。")
+                    else:
+                        cols = st.columns(len(images))
+                        for c, img in zip(cols, images):
+                            with c:
+                                st.image(img["thumb"], use_container_width=True)
+                                st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
 
             is_last = idx == len(card_rows) - 1
             col_ng, col_ok = st.columns(2)
