@@ -373,11 +373,12 @@ with tab_hist:
         idx = max(0, min(idx, len(card_rows) - 1))
         row = card_rows[idx]
 
-        # 閲覧回数の自動カウント(同じカードは同一セッションで1回のみ)
+        # 閲覧回数の自動カウント + カード変更時は詳細表示をリセット
         if st.session_state.get("last_viewed_card_id") != row["id"]:
             increment_view_count(row["id"])
             row["view_count"] = row.get("view_count", 0) + 1
             st.session_state.last_viewed_card_id = row["id"]
+            st.session_state.card_revealed = False
 
         col_back, col_count = st.columns([1, 2])
         with col_back:
@@ -394,66 +395,89 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
-        pronunciations = _parse_word_pronunciations(row["explanation"])
-        explanation_no_ipa = _strip_ipa(row["explanation"])
+        revealed = st.session_state.get("card_revealed", False)
 
-        words_inline = ""
-        for w in words_list:
-            ipa = pronunciations.get(w.lower(), "")
-            ipa_html = (
-                f"<span style='color:#888; font-size:13px; margin-left:4px;'>/{html.escape(ipa)}/</span>"
-                if ipa
-                else ""
+        if not revealed:
+            # ── 表面: 英文のみ ──
+            st.markdown(
+                f"""
+                <div style='
+                    background: #fff; border: 2px solid #ff4b4b;
+                    border-radius: 12px; padding: 24px; margin: 16px 0;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                '>
+                  <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
+                  <div style='font-size:18px; line-height:1.6;'>{html.escape(row["english"])}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            words_inline += (
-                f"<span style='display:inline-block; margin-right:14px; white-space:nowrap;'>"
-                f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
-                f"{ipa_html}"
-                f"</span>"
+            _speak_button(row["english"])
+
+            if st.button("詳細を見る", key="reveal_card", type="primary", use_container_width=True):
+                st.session_state.card_revealed = True
+                st.rerun()
+        else:
+            # ── 裏面: 単語+IPA + 和訳 + 解説 ──
+            words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+            pronunciations = _parse_word_pronunciations(row["explanation"])
+            explanation_no_ipa = _strip_ipa(row["explanation"])
+
+            words_inline = ""
+            for w in words_list:
+                ipa = pronunciations.get(w.lower(), "")
+                ipa_html = (
+                    f"<span style='color:#888; font-size:13px; margin-left:4px;'>/{html.escape(ipa)}/</span>"
+                    if ipa
+                    else ""
+                )
+                words_inline += (
+                    f"<span style='display:inline-block; margin-right:14px; white-space:nowrap;'>"
+                    f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
+                    f"{ipa_html}"
+                    f"</span>"
+                )
+            words_html_rows = f"<div style='line-height:1.8;'>{words_inline}</div>"
+
+            st.markdown(
+                f"""
+                <div style='
+                    background: #fff; border: 2px solid #ff4b4b;
+                    border-radius: 12px; padding: 20px; margin: 16px 0;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                '>
+                  <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
+                  <div style='margin-bottom:16px;'>{words_html_rows}</div>
+                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
+                  <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["english"])}</div>
+                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
+                  <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
+                  <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
+                  <div style='font-size:14px;'>{_format_explanation_html(explanation_no_ipa)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-        words_html_rows = f"<div style='line-height:1.8;'>{words_inline}</div>"
+            _speak_button(row["english"])
 
-        st.markdown(
-            f"""
-            <div style='
-                background: #fff; border: 2px solid #ff4b4b;
-                border-radius: 12px; padding: 20px; margin: 16px 0;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            '>
-              <div style='color:#999; font-size:12px; margin-bottom:8px;'>単語</div>
-              <div style='margin-bottom:16px;'>{words_html_rows}</div>
-              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【英文】</div>
-              <div style='font-size:18px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["english"])}</div>
-              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【和訳】</div>
-              <div style='font-size:15px; line-height:1.6; margin-bottom:16px;'>{html.escape(row["japanese"])}</div>
-              <div style='color:#999; font-size:12px; margin-bottom:4px;'>【解説】</div>
-              <div style='font-size:14px;'>{_format_explanation_html(explanation_no_ipa)}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        _speak_button(row["english"])
-
-        is_last = idx == len(card_rows) - 1
-        col_ng, col_ok = st.columns(2)
-        with col_ng:
-            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
-                update_status(row["id"], "review")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
-        with col_ok:
-            if st.button("✅ 理解した", key="mark_mastered", type="primary", use_container_width=True):
-                update_status(row["id"], "mastered")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
+            is_last = idx == len(card_rows) - 1
+            col_ng, col_ok = st.columns(2)
+            with col_ng:
+                if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
+                    update_status(row["id"], "review")
+                    if is_last:
+                        st.session_state.card_finished = True
+                    else:
+                        st.session_state.card_index = idx + 1
+                    st.rerun()
+            with col_ok:
+                if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                    update_status(row["id"], "mastered")
+                    if is_last:
+                        st.session_state.card_finished = True
+                    else:
+                        st.session_state.card_index = idx + 1
+                    st.rerun()
 
         if st.session_state.get("card_finished"):
             st.success("🎉 このセットの最後のカードでした!")
