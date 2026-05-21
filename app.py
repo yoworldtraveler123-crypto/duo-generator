@@ -474,6 +474,16 @@ with tab_hist:
         words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
         highlighted_english = _highlight_target_words(row["english"], words_list)
 
+        # ── 音声プレイヤー(表面/裏面共通の固定位置: 再生継続のため) ──
+        should_autoplay = st.session_state.pop("autoplay_pending", False)
+        try:
+            with st.spinner("音声を読み込み中..." if not get_audio_blob(row["id"]) else ""):
+                audio_bytes = get_or_generate_audio(row["id"], row["english"])
+            st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
+        except Exception as e:
+            st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
+            _speak_button(row["english"], auto_play=should_autoplay)
+
         if not revealed:
             # ── 表面: 英文のみ ──
             st.markdown(
@@ -489,14 +499,6 @@ with tab_hist:
                 """,
                 unsafe_allow_html=True,
             )
-            should_autoplay = st.session_state.pop("autoplay_pending", False)
-            try:
-                with st.spinner("音声を読み込み中..." if not get_audio_blob(row["id"]) else ""):
-                    audio_bytes = get_or_generate_audio(row["id"], row["english"])
-                st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
-            except Exception as e:
-                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
-                _speak_button(row["english"], auto_play=should_autoplay)
 
             if st.button("詳細を見る", key="reveal_card", type="primary", use_container_width=True):
                 st.session_state.card_revealed = True
@@ -541,12 +543,6 @@ with tab_hist:
                 """,
                 unsafe_allow_html=True,
             )
-            try:
-                audio_bytes = get_or_generate_audio(row["id"], row["english"])
-                st.audio(audio_bytes, format="audio/mp3", autoplay=False)
-            except Exception as e:
-                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
-                _speak_button(row["english"])
 
             is_last = idx == len(card_rows) - 1
             col_ng, col_ok = st.columns(2)
