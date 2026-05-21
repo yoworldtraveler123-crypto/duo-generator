@@ -16,9 +16,11 @@ from streamlit.components.v1 import html as st_html
 from database import (
     delete_sentence,
     get_all_sentences,
+    get_audio_blob,
     get_sentences_by_status,
     increment_view_count,
     init_db,
+    save_audio_blob,
     save_sentence,
     search_sentences,
     update_status,
@@ -37,7 +39,7 @@ OPENAI_TTS_MODEL = "tts-1"
 
 @st.cache_data(show_spinner=False)
 def _openai_tts(text: str, voice: str = OPENAI_TTS_VOICE) -> bytes:
-    """OpenAI TTS で英文を mp3 バイト列に変換。同一入力はキャッシュする。"""
+    """OpenAI TTS で英文を mp3 バイト列に変換。同一入力はキャッシュする(プロセス内)。"""
     from openai import OpenAI
 
     client = OpenAI()
@@ -48,6 +50,16 @@ def _openai_tts(text: str, voice: str = OPENAI_TTS_VOICE) -> bytes:
         response_format="mp3",
     )
     return response.content
+
+
+def get_or_generate_audio(row_id: int, text: str) -> bytes:
+    """DBキャッシュ優先で音声バイトを返す。未生成ならOpenAIで作って保存。"""
+    cached = get_audio_blob(row_id)
+    if cached:
+        return cached
+    audio = _openai_tts(text)
+    save_audio_blob(row_id, audio)
+    return audio
 
 SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
 
@@ -479,7 +491,8 @@ with tab_hist:
             )
             should_autoplay = st.session_state.pop("autoplay_pending", False)
             try:
-                audio_bytes = _openai_tts(row["english"])
+                with st.spinner("音声を読み込み中..." if not get_audio_blob(row["id"]) else ""):
+                    audio_bytes = get_or_generate_audio(row["id"], row["english"])
                 st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
             except Exception as e:
                 st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
@@ -529,7 +542,7 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
             try:
-                audio_bytes = _openai_tts(row["english"])
+                audio_bytes = get_or_generate_audio(row["id"], row["english"])
                 st.audio(audio_bytes, format="audio/mp3", autoplay=False)
             except Exception as e:
                 st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")

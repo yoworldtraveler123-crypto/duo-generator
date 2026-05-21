@@ -18,7 +18,8 @@ def init_db() -> None:
                 japanese    TEXT    NOT NULL,
                 explanation TEXT    NOT NULL,
                 status      TEXT    NOT NULL DEFAULT 'new',
-                view_count  INTEGER NOT NULL DEFAULT 0
+                view_count  INTEGER NOT NULL DEFAULT 0,
+                audio_blob  BLOB
             )
         """)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sentences)").fetchall()}
@@ -26,6 +27,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE sentences ADD COLUMN status TEXT NOT NULL DEFAULT 'new'")
         if "view_count" not in cols:
             conn.execute("ALTER TABLE sentences ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0")
+        if "audio_blob" not in cols:
+            conn.execute("ALTER TABLE sentences ADD COLUMN audio_blob BLOB")
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str) -> int:
@@ -70,6 +73,20 @@ def update_status(row_id: int, status: str) -> None:
 def increment_view_count(row_id: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("UPDATE sentences SET view_count = view_count + 1 WHERE id = ?", (row_id,))
+
+
+def get_audio_blob(row_id: int) -> bytes | None:
+    """指定IDの音声バイナリ(mp3)を取得。未生成なら None。"""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT audio_blob FROM sentences WHERE id = ?", (row_id,)).fetchone()
+    if not row or not row[0]:
+        return None
+    return bytes(row[0])
+
+
+def save_audio_blob(row_id: int, audio_bytes: bytes) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE sentences SET audio_blob = ? WHERE id = ?", (audio_bytes, row_id))
 
 
 def get_sentences_by_status(status: str | None) -> list[dict]:
