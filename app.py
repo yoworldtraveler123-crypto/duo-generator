@@ -567,41 +567,43 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-        revealed = st.session_state.get("card_revealed", False)
         words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
         highlighted_english = _highlight_target_words(row["english"], words_list)
 
-        # ── 音声プレイヤー(表面/裏面共通の固定位置: 再生継続のため) ──
+        # ── 音声プレイヤー(fragmentの外: 詳細トグル時に再描画させない) ──
         should_autoplay = st.session_state.pop("autoplay_pending", False)
         try:
-            with st.spinner("音声を読み込み中..." if not get_audio_blob(row["id"]) else ""):
-                audio_bytes = get_or_generate_audio(row["id"], row["english"])
+            audio_bytes = get_or_generate_audio(row["id"], row["english"])
             st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
         except Exception as e:
             st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
             _speak_button(row["english"], auto_play=should_autoplay)
 
-        if not revealed:
-            # ── 表面: 英文のみ ──
-            st.markdown(
-                f"""
-                <div style='
-                    background: #fff; border: 1px solid #e5e7eb;
-                    border-radius: 12px; padding: 24px; margin: 16px 0;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-                '>
-                  <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
-                  <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        # ── 表/裏切替はfragment内に閉じ込めて、外側の音声プレイヤーを再描画しない ──
+        @st.fragment
+        def _reveal_section():
+            revealed = st.session_state.get("card_revealed", False)
 
-            if st.button("詳細を見る", key="reveal_card", use_container_width=True):
-                st.session_state.card_revealed = True
-                st.rerun()
-        else:
-            # ── 裏面: 単語+IPA + 和訳 + 解説 ──
+            if not revealed:
+                st.markdown(
+                    f"""
+                    <div style='
+                        background: #fff; border: 1px solid #e5e7eb;
+                        border-radius: 12px; padding: 24px; margin: 16px 0;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+                    '>
+                      <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
+                      <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if st.button("詳細を見る", key="reveal_card", use_container_width=True):
+                    st.session_state.card_revealed = True
+                    st.rerun(scope="fragment")
+                return
+
+            # 裏面: 単語+IPA+類義語 + 英文 + 和訳 + 解説
             pronunciations = _parse_word_pronunciations(row["explanation"])
             synonyms = _parse_word_synonyms(row["explanation"])
             explanation_no_ipa = _strip_ipa(row["explanation"])
@@ -631,7 +633,6 @@ with tab_hist:
                     f"{meta_html}"
                     f"</div>"
                 )
-            words_html_rows = f"<div>{words_block_html}</div>"
 
             st.markdown(
                 f"""
@@ -641,7 +642,7 @@ with tab_hist:
                     box-shadow: 0 2px 10px rgba(0,0,0,0.06);
                 '>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
-                  <div style='margin-bottom:10px;'>{words_html_rows}</div>
+                  <div style='margin-bottom:10px;'>{words_block_html}</div>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>英文</div>
                   <div style='font-size:17px; line-height:1.5; margin-bottom:10px;'>{highlighted_english}</div>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
@@ -653,7 +654,6 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-            # ── 単語イメージギャラリー(常時表示・単語切替) ──
             if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
                 st.markdown(
                     "<div style='color:#999; font-size:11px; margin-top:8px; margin-bottom:4px;'>🖼️ 単語のイメージ</div>",
@@ -667,8 +667,7 @@ with tab_hist:
                     label_visibility="collapsed",
                 )
                 if selected_word:
-                    with st.spinner(""):
-                        images = get_or_fetch_images(row["id"], selected_word)
+                    images = get_or_fetch_images(row["id"], selected_word)
                     if not images:
                         st.caption("画像が見つかりませんでした。")
                     else:
@@ -677,6 +676,8 @@ with tab_hist:
                             with c:
                                 st.image(img["thumb"], use_container_width=True)
                                 st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
+
+        _reveal_section()
 
         # ── わからない / わかる ボタンは表面・裏面ともに常時表示 ──
         is_last = idx == len(card_rows) - 1
