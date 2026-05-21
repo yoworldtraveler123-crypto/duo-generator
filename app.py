@@ -111,12 +111,12 @@ def get_or_fetch_images(row_id: int, word: str) -> list[dict]:
 
 SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
 
-以下のガイドラインに従ってください：
+ガイドライン:
 - 実際のビジネスシーンで使われる自然な英語を使用する
 - 指定された単語をすべて文法的に自然な形で組み込む
 - 例文はメール、会議、プレゼンテーション等のビジネス場面を想定する
 - 和訳は自然な日本語ビジネス表現にする
-- 解説では各単語ごとに「発音記号(IPA表記)・コア意味・ビジネス文脈での使い方」を箇条書きで簡潔に示す"""
+- 解説は必ず指定フォーマットを厳守する(マークダウン記法やサブ箇条書きは使わない)"""
 
 
 def _parse_response(text: str) -> dict[str, str]:
@@ -146,12 +146,18 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 （ここに日本語訳）
 
 【解説】
-（指定単語ごとに、以下の形式で1行ずつ箇条書き）
-- 単語 /IPA発音記号/: コア意味。ビジネス文脈での使い方
+（指定単語ごとに、必ず以下の形式で1行ずつ。1単語=1行のみ。サブ箇条書き禁止。Markdown(**, __)禁止）
+- 単語 /IPA発音記号/ (類義語: word1, word2, word3): コア意味。ビジネス文脈での使い方。
 
-例:
-- negotiate /nɪˈɡoʊʃieɪt/: 交渉する。商談や条件調整で使う基本動詞。
-- deadline /ˈdedlaɪn/: 締切。タスク完了の最終期限を示す。"""
+ルール:
+- IPA発音記号は必須(/.../形式)
+- 類義語は2〜3個。同一品詞・近い意味のビジネス英単語を選ぶ
+- 全部1行に収める。改行禁止
+- アスタリスク等の装飾文字禁止
+
+例(この形式で必ず出力):
+- negotiate /nɪˈɡoʊʃieɪt/ (類義語: discuss, bargain, mediate): 交渉する。商談や条件調整で使う基本動詞。
+- deadline /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): 締切。タスク完了の最終期限を示す。"""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -162,7 +168,9 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
     )
 
     text = next((b.text for b in response.content if b.type == "text"), "")
-    return _parse_response(text)
+    parsed = _parse_response(text)
+    parsed["raw"] = text
+    return parsed
 
 
 EXTRACTION_PROMPT = """この画像は英語学習アプリのスクリーンショットです。
@@ -294,7 +302,15 @@ with tab_gen:
                     result = generate_sentence(words)
 
                 if not result["english"]:
-                    st.warning("レスポンスの解析に失敗しました。再度お試しください。")
+                    raw_text = result.get("raw", "")
+                    if raw_text and "【英文】" not in raw_text:
+                        st.error(
+                            "🚫 この単語ではビジネス英語例文を生成できませんでした。\n\n"
+                            "卑語・スラング・不適切な表現はAIが生成を拒否します。"
+                            "ビジネスシーンで使う一般的な英単語(動詞・名詞・形容詞)を入力してください。"
+                        )
+                    else:
+                        st.warning("レスポンスの解析に失敗しました。再度お試しください。")
                 else:
                     st.success("生成完了！")
                     col_left, col_right = st.columns([1, 1])
@@ -322,9 +338,25 @@ def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
     return out
 
 
+def _parse_word_synonyms(explanation: str) -> dict[str, list[str]]:
+    """解説テキストから 単語→類義語リスト のマップを抽出する。"""
+    out: dict[str, list[str]] = {}
+    for line in explanation.splitlines():
+        m = re.search(r"([a-zA-Z][a-zA-Z\-']*)\s*/[^/]+/\s*\(類義語:\s*([^)]+)\)", line)
+        if m:
+            word = m.group(1).lower()
+            syns = [s.strip() for s in m.group(2).split(",") if s.strip()]
+            if syns:
+                out[word] = syns
+    return out
+
+
 def _strip_ipa(text: str) -> str:
-    """解説文中の `word /IPA/` から /IPA/ 部分だけ取り除く。"""
-    return re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/", r"\1", text)
+    """解説文中の `word /IPA/ (類義語: ...)` から /IPA/ と類義語ブロックを除去。"""
+    text = re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/\s*\(類義語:[^)]*\)", r"\1", text)
+    text = re.sub(r"([a-zA-Z][a-zA-Z\-']*)\s+/[^/]+/", r"\1", text)
+    text = re.sub(r"\*\*+", "", text)
+    return text
 
 
 def _highlight_target_words(english: str, words: list[str]) -> str:
@@ -352,6 +384,8 @@ def _format_explanation_html(explanation: str) -> str:
         line = re.sub(r"^[-•・*]+\s*", "", line)
         line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
         line = re.sub(r"\*(.+?)\*", r"\1", line)
+        line = re.sub(r"\*\*+", "", line)
+        line = re.sub(r"__+", "", line)
         m = re.match(r"^([^:：]{1,80})[:：]\s*(.+)$", line)
         if m:
             head = m.group(1).strip()
@@ -554,23 +588,30 @@ with tab_hist:
         else:
             # ── 裏面: 単語+IPA + 和訳 + 解説 ──
             pronunciations = _parse_word_pronunciations(row["explanation"])
+            synonyms = _parse_word_synonyms(row["explanation"])
             explanation_no_ipa = _strip_ipa(row["explanation"])
 
-            words_inline = ""
+            words_block_html = ""
             for w in words_list:
                 ipa = pronunciations.get(w.lower(), "")
                 ipa_html = (
-                    f"<span style='color:#888; font-size:13px; margin-left:4px;'>/{html.escape(ipa)}/</span>"
+                    f"<span style='color:#888; font-size:13px;'>/{html.escape(ipa)}/</span>"
                     if ipa
                     else ""
                 )
-                words_inline += (
-                    f"<span style='display:inline-block; margin-right:14px; white-space:nowrap;'>"
-                    f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
-                    f"{ipa_html}"
-                    f"</span>"
+                syns = synonyms.get(w.lower(), [])
+                syn_html = (
+                    f"<span style='color:#9ca3af; font-size:12px;'> ≈ {html.escape(', '.join(syns))}</span>"
+                    if syns
+                    else ""
                 )
-            words_html_rows = f"<div style='line-height:1.8;'>{words_inline}</div>"
+                words_block_html += (
+                    f"<div style='margin-bottom:4px; line-height:1.5;'>"
+                    f"<span style='font-weight:600; font-size:15px; color:#222;'>{html.escape(w)}</span>"
+                    f" {ipa_html}{syn_html}"
+                    f"</div>"
+                )
+            words_html_rows = f"<div>{words_block_html}</div>"
 
             st.markdown(
                 f"""
