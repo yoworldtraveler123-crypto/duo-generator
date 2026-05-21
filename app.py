@@ -597,7 +597,7 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-            if st.button("詳細を見る", key="reveal_card", type="primary", use_container_width=True):
+            if st.button("詳細を見る", key="reveal_card", use_container_width=True):
                 st.session_state.card_revealed = True
                 st.rerun()
         else:
@@ -678,24 +678,25 @@ with tab_hist:
                                 st.image(img["thumb"], use_container_width=True)
                                 st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
 
-            is_last = idx == len(card_rows) - 1
-            col_ng, col_ok = st.columns(2)
-            with col_ng:
-                if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
-                    update_status(row["id"], "review")
-                    if is_last:
-                        st.session_state.card_finished = True
-                    else:
-                        st.session_state.card_index = idx + 1
-                    st.rerun()
-            with col_ok:
-                if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                    update_status(row["id"], "mastered")
-                    if is_last:
-                        st.session_state.card_finished = True
-                    else:
-                        st.session_state.card_index = idx + 1
-                    st.rerun()
+        # ── わからない / わかる ボタンは表面・裏面ともに常時表示 ──
+        is_last = idx == len(card_rows) - 1
+        col_ng, col_ok = st.columns(2)
+        with col_ng:
+            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
+                update_status(row["id"], "review")
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
+                st.rerun()
+        with col_ok:
+            if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                update_status(row["id"], "mastered")
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
+                st.rerun()
 
         if st.session_state.get("card_finished"):
             st.success("🎉 このセットの最後のカードでした!")
