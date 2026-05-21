@@ -28,6 +28,26 @@ load_dotenv()
 
 if "ANTHROPIC_API_KEY" in st.secrets and not os.getenv("ANTHROPIC_API_KEY"):
     os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
+if "OPENAI_API_KEY" in st.secrets and not os.getenv("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+
+OPENAI_TTS_VOICE = "nova"
+OPENAI_TTS_MODEL = "tts-1"
+
+
+@st.cache_data(show_spinner=False)
+def _openai_tts(text: str, voice: str = OPENAI_TTS_VOICE) -> bytes:
+    """OpenAI TTS で英文を mp3 バイト列に変換。同一入力はキャッシュする。"""
+    from openai import OpenAI
+
+    client = OpenAI()
+    response = client.audio.speech.create(
+        model=OPENAI_TTS_MODEL,
+        voice=voice,
+        input=text,
+        response_format="mp3",
+    )
+    return response.content
 
 SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
 
@@ -458,7 +478,12 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
             should_autoplay = st.session_state.pop("autoplay_pending", False)
-            _speak_button(row["english"], auto_play=should_autoplay)
+            try:
+                audio_bytes = _openai_tts(row["english"])
+                st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
+            except Exception as e:
+                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
+                _speak_button(row["english"], auto_play=should_autoplay)
 
             if st.button("詳細を見る", key="reveal_card", type="primary", use_container_width=True):
                 st.session_state.card_revealed = True
@@ -503,7 +528,12 @@ with tab_hist:
                 """,
                 unsafe_allow_html=True,
             )
-            _speak_button(row["english"])
+            try:
+                audio_bytes = _openai_tts(row["english"])
+                st.audio(audio_bytes, format="audio/mp3", autoplay=False)
+            except Exception as e:
+                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
+                _speak_button(row["english"])
 
             is_last = idx == len(card_rows) - 1
             col_ng, col_ok = st.columns(2)
