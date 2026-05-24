@@ -840,13 +840,13 @@ with tab_hist:
                         f"<span style='font-size:13px; color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
                     )
                 meaning_html = (
-                    f"<div style='font-size:13px; color:#374151; line-height:1.5; margin-top:2px;'>"
+                    f"<div style='font-size:13px; color:#374151; line-height:1.4; margin-top:0;'>"
                     f": {html.escape(meaning)}</div>"
                     if meaning
                     else ""
                 )
                 words_block_html += (
-                    f"<div style='margin-bottom:12px;'>"
+                    f"<div style='margin-bottom:7px;'>"
                     f"<div style='display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;'>"
                     f"{''.join(inline_parts)}"
                     f"</div>"
