@@ -1,5 +1,7 @@
 """SQLite操作モジュール"""
 
+from __future__ import annotations  # `bytes | None` 等の注釈を Python 3.9 でも使えるように
+
 import sqlite3
 from datetime import datetime
 from pathlib import Path
