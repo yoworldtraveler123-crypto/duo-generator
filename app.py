@@ -21,6 +21,7 @@ from database import (
     get_audio_blob,
     get_image_data,
     get_sentences_by_status,
+    get_used_words,
     increment_view_count,
     init_db,
     save_audio_blob,
@@ -413,13 +414,21 @@ with tab_bulk:
     )
 
     words = _parse_word_list(bulk_text)
-    groups = _chunk(words, 5)
-    st.caption(f"認識した単語: {len(words)} 語 → 例文 {len(groups)} 文を生成します(並び順に5語ずつ)")
+    used = get_used_words()
+    new_words = [w for w in words if w not in used]
+    skipped = len(words) - len(new_words)
+    groups = _chunk(new_words, 5)
+
+    caption = f"認識した単語: {len(words)} 語"
+    if skipped:
+        caption += f"（うち履歴済み {skipped} 語をスキップ → 残り {len(new_words)} 語）"
+    caption += f" → 例文 {len(groups)} 文を生成します(並び順に5語ずつ)"
+    st.caption(caption)
 
     if st.button(
         f"{len(groups)} 文をまとめて生成",
         type="primary",
-        disabled=not words,
+        disabled=not new_words,
         key="bulk_gen_btn",
     ):
         prog = st.progress(0.0)

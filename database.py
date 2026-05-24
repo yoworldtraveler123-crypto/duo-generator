@@ -127,3 +127,18 @@ def get_sentences_by_status(status: str | None) -> list[dict]:
                 (status,),
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_used_words() -> set[str]:
+    """過去の例文で対象に使われた単語(小文字)の集合を返す。一括取込の重複スキップ用。"""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT words FROM sentences").fetchall()
+    used: set[str] = set()
+    for (w,) in rows:
+        if not w:
+            continue
+        for token in w.split(","):
+            t = token.strip().lower()
+            if t:
+                used.add(t)
+    return used
