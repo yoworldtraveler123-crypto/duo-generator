@@ -33,12 +33,16 @@ from database import (
 
 load_dotenv()
 
-if "ANTHROPIC_API_KEY" in st.secrets and not os.getenv("ANTHROPIC_API_KEY"):
-    os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
-if "OPENAI_API_KEY" in st.secrets and not os.getenv("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-if "UNSPLASH_ACCESS_KEY" in st.secrets and not os.getenv("UNSPLASH_ACCESS_KEY"):
-    os.environ["UNSPLASH_ACCESS_KEY"] = st.secrets["UNSPLASH_ACCESS_KEY"]
+# Streamlit Cloudではst.secrets、ローカルでは.envからAPIキーを読む。
+# secrets.tomlが無いローカル環境ではst.secretsへのアクセスが例外を投げるため握りつぶす。
+try:
+    _secrets = dict(st.secrets)
+except Exception:
+    _secrets = {}
+
+for _key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "UNSPLASH_ACCESS_KEY"):
+    if _key in _secrets and not os.getenv(_key):
+        os.environ[_key] = _secrets[_key]
 
 OPENAI_TTS_VOICE = "nova"
 OPENAI_TTS_MODEL = "tts-1"
@@ -144,21 +148,23 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 （ここに例文）
 
 【和訳】
-（ここに日本語訳）
+（ここに日本語訳。指定単語すべてに対応する日本語の箇所を、1単語につき必ず1箇所ずつ《》で囲む。例: tint→《色合い》、peanut→《ピーナッツ》）
 
 【解説】
 （指定単語ごとに、必ず以下の形式で1行ずつ。1単語=1行のみ。サブ箇条書き禁止。Markdown(**, __)禁止）
-- 単語 /IPA発音記号/ (類義語: word1, word2, word3): コア意味。ビジネス文脈での使い方。
+- 単語 【品詞】 /IPA発音記号/ (類義語: word1, word2, word3): コア意味を簡潔に1文で(目安25字以内、長い使い方説明は不要)。
 
 ルール:
+- 品詞は単語の直後に【】で1つ置く(【動】【名】【形】【副】【前】【接】【代】等)
 - IPA発音記号は必須(/.../形式)
 - 類義語は2〜3個。同一品詞・近い意味のビジネス英単語を選ぶ
 - 全部1行に収める。改行禁止
 - アスタリスク等の装飾文字禁止
+- 和訳では指定単語すべてに対応する日本語表現を必ず1箇所ずつ《》で囲む(囲んだ《》の数=指定単語の数。1つも漏らさない。《》は和訳の中だけで使う)
 
 例(この形式で必ず出力):
-- negotiate /nɪˈɡoʊʃieɪt/ (類義語: discuss, bargain, mediate): 交渉する。商談や条件調整で使う基本動詞。
-- deadline /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): 締切。タスク完了の最終期限を示す。"""
+- negotiate 【動】 /nɪˈɡoʊʃieɪt/ (類義語: discuss, bargain, mediate): 商談や条件を取りまとめる交渉の動詞。
+- deadline 【名】 /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): タスク完了の最終期限。"""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -262,7 +268,7 @@ def _parse_word_list(text: str) -> list[str]:
     return _dedup_words([w for w in cleaned if w])
 
 
-def _chunk(lst: list, n: int = 5) -> list[list]:
+def _chunk(lst: list, n: int = 3) -> list[list]:
     """リストを先頭から n 個ずつのグループに分割する。"""
     return [lst[i:i + n] for i in range(0, len(lst), n)]
 
@@ -311,15 +317,15 @@ with tab_gen:
                 st.session_state.words_input_area = " ".join(st.session_state.word_select)
 
             st.multiselect(
-                "例文に使う単語を1〜5語選択(下の入力欄に自動反映)",
+                "例文に使う単語を1〜3語選択(下の入力欄に自動反映)",
                 options=st.session_state.extracted_words,
-                max_selections=5,
+                max_selections=3,
                 key="word_select",
                 on_change=_sync_words,
             )
 
     words_input = st.text_area(
-        "単語をスペース区切りで入力（1〜5語）",
+        "単語をスペース区切りで入力（1〜3語）",
         placeholder="例: negotiate deadline stakeholder",
         height=80,
         key="words_input_area",
@@ -327,8 +333,8 @@ with tab_gen:
 
     if st.button("例文を生成", type="primary"):
         words = words_input.strip().split()
-        if len(words) < 1 or len(words) > 5:
-            st.error("1〜5語を入力してください。")
+        if len(words) < 1 or len(words) > 3:
+            st.error("1〜3語を入力してください。")
         else:
             try:
                 with st.spinner("生成中..."):
@@ -351,7 +357,7 @@ with tab_gen:
                         st.markdown("#### 【英文】")
                         st.info(result["english"])
                         st.markdown("#### 【和訳】")
-                        st.info(result["japanese"])
+                        st.info(result["japanese"].replace("《", "").replace("》", ""))
                     with col_right:
                         st.markdown("#### 【解説】")
                         st.info(result["explanation"])
@@ -417,12 +423,12 @@ with tab_bulk:
     used = get_used_words()
     new_words = [w for w in words if w not in used]
     skipped = len(words) - len(new_words)
-    groups = _chunk(new_words, 5)
+    groups = _chunk(new_words, 3)
 
     caption = f"認識した単語: {len(words)} 語"
     if skipped:
         caption += f"（うち履歴済み {skipped} 語をスキップ → 残り {len(new_words)} 語）"
-    caption += f" → 例文 {len(groups)} 文を生成します(並び順に5語ずつ)"
+    caption += f" → 例文 {len(groups)} 文を生成します(並び順に3語ずつ)"
     st.caption(caption)
 
     if st.button(
@@ -455,25 +461,40 @@ with tab_bulk:
         st.caption("音声・画像は「履歴」タブで各カードを開いたときに生成されます(一括時はスキップ)。")
 
 def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
-    """解説テキストから 単語→IPA のマップを抽出する。"""
+    """解説テキストから 単語→IPA のマップを抽出する。(単語の後の【品詞】は読み飛ばす)"""
     out: dict[str, str] = {}
     for line in explanation.splitlines():
-        m = re.search(r"([a-zA-Z][a-zA-Z\-']*)\s*/([^/]+)/", line)
+        m = re.search(r"([a-zA-Z][a-zA-Z\-']*)\s*(?:【[^】]*】)?\s*/([^/]+)/", line)
         if m:
             out[m.group(1).lower()] = m.group(2).strip()
     return out
 
 
 def _parse_word_synonyms(explanation: str) -> dict[str, list[str]]:
-    """解説テキストから 単語→類義語リスト のマップを抽出する。"""
+    """解説テキストから 単語→類義語リスト のマップを抽出する。(単語の後の【品詞】は読み飛ばす)"""
     out: dict[str, list[str]] = {}
     for line in explanation.splitlines():
-        m = re.search(r"([a-zA-Z][a-zA-Z\-']*)\s*/[^/]+/\s*\(類義語:\s*([^)]+)\)", line)
+        m = re.search(
+            r"([a-zA-Z][a-zA-Z\-']*)\s*(?:【[^】]*】)?\s*/[^/]+/\s*\(類義語:\s*([^)]+)\)",
+            line,
+        )
         if m:
             word = m.group(1).lower()
             syns = [s.strip() for s in m.group(2).split(",") if s.strip()]
             if syns:
                 out[word] = syns
+    return out
+
+
+def _parse_word_pos(explanation: str) -> dict[str, str]:
+    """解説テキストから 単語→品詞(動/名/形 等) のマップを抽出する。"""
+    out: dict[str, str] = {}
+    for line in explanation.splitlines():
+        clean = re.sub(r"^[-•・*]+\s*", "", line.strip())
+        clean = re.sub(r"\*+", "", clean)
+        m = re.match(r"([a-zA-Z][a-zA-Z\-']*)\s*【([^】]+)】", clean)
+        if m:
+            out[m.group(1).lower()] = m.group(2).strip()
     return out
 
 
@@ -529,6 +550,53 @@ def _format_explanation_html(explanation: str) -> str:
     if not items:
         return f"<div style='line-height:1.6;'>{html.escape(explanation)}</div>"
     return f"<ul style='margin:0; padding-left:18px;'>{''.join(items)}</ul>"
+
+
+def _parse_word_meanings(explanation: str) -> dict[str, str]:
+    """解説テキストから 単語→意味(コア意味・使い方) のマップを抽出する。
+
+    新形式 `word /IPA/ (類義語: ...): 意味` と
+    旧形式 `**word（訳）**: 意味` の両方に対応する。
+    """
+    out: dict[str, str] = {}
+    for raw in explanation.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[-•・*]+\s*", "", line)  # 先頭の箇条書き記号
+        line = re.sub(r"\*+", "", line)  # 太字マーカー(**)
+        wm = re.match(r"([a-zA-Z][a-zA-Z\-']*)", line)
+        if not wm:
+            continue
+        # IPA・類義語・品詞ブロックを除いてから、最初のコロン以降を意味とみなす
+        rest = re.sub(r"\(類義語:[^)]*\)", "", line)
+        rest = re.sub(r"/[^/]+/", "", rest)
+        rest = re.sub(r"【[^】]*】", "", rest)
+        cm = re.search(r"[:：]\s*(.+)$", rest)
+        if cm:
+            out[wm.group(1).lower()] = cm.group(1).strip()
+    return out
+
+
+def _shorten_meaning(text: str, limit: int = 40) -> str:
+    """単語の意味を「意味＋α」程度に短縮する。最初の1文、長すぎれば文字数で切る。"""
+    text = re.sub(r"\s+", " ", text.strip())
+    if not text:
+        return text
+    head = re.split(r"[。.]", text, maxsplit=1)[0].strip()
+    if head and len(head) <= limit:
+        return head + "。"
+    return text[:limit].rstrip() + "…"
+
+
+def _highlight_japanese(japanese: str) -> str:
+    """和訳中の《...》で囲まれた対応箇所を英文と同じ赤で強調。マーカーが無ければそのまま。"""
+    escaped = html.escape(japanese)
+    return re.sub(
+        r"《(.+?)》",
+        lambda m: f"<span style='color:#ff4b4b; font-weight:700;'>{m.group(1)}</span>",
+        escaped,
+    )
 
 
 def _speak_button(text: str, auto_play: bool = False) -> None:
@@ -690,58 +758,99 @@ with tab_hist:
             st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
             _speak_button(row["english"], auto_play=should_autoplay)
 
-        # ── 表/裏切替はfragment内に閉じ込めて、外側の音声プレイヤーを再描画しない ──
+        # ── 英文カード(常時表示。fragment外なので詳細トグルでも再描画されない) ──
+        st.markdown(
+            f"""
+            <div style='
+                background: #fff; border: 1px solid #e5e7eb;
+                border-radius: 12px; padding: 24px; margin: 16px 0;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+            '>
+              <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
+              <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── わからない / わかる ボタン(英文カードの直下に固定。詳細を展開しても動かない) ──
+        is_last = idx == len(card_rows) - 1
+        col_ng, col_ok = st.columns(2)
+        with col_ng:
+            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
+                update_status(row["id"], "review")
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
+                st.rerun()
+        with col_ok:
+            if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                update_status(row["id"], "mastered")
+                if is_last:
+                    st.session_state.card_finished = True
+                else:
+                    st.session_state.card_index = idx + 1
+                st.rerun()
+
+        if st.session_state.get("card_finished"):
+            st.success("🎉 このセットの最後のカードでした!")
+            if st.button("最初から", key="restart_deck", use_container_width=True):
+                st.session_state.card_index = 0
+                st.session_state.card_finished = False
+                st.session_state.pop("last_viewed_card_id", None)
+                st.rerun()
+
+        # ── 詳細(表/裏)はfragment内に閉じ込めて、英文・音声・判断ボタンを再描画しない ──
         @st.fragment
         def _reveal_section():
             revealed = st.session_state.get("card_revealed", False)
 
             if not revealed:
-                st.markdown(
-                    f"""
-                    <div style='
-                        background: #fff; border: 1px solid #e5e7eb;
-                        border-radius: 12px; padding: 24px; margin: 16px 0;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-                    '>
-                      <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
-                      <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
                 if st.button("詳細を見る", key="reveal_card", use_container_width=True):
                     st.session_state.card_revealed = True
                     st.rerun(scope="fragment")
                 return
 
-            # 裏面: 単語+IPA+類義語 + 英文 + 和訳 + 解説
+            # 裏面: 単語(発音・類義語・意味を1行に統合) + 和訳
             pronunciations = _parse_word_pronunciations(row["explanation"])
             synonyms = _parse_word_synonyms(row["explanation"])
-            explanation_no_ipa = _strip_ipa(row["explanation"])
+            meanings = _parse_word_meanings(row["explanation"])
+            pos_map = _parse_word_pos(row["explanation"])
 
             words_block_html = ""
             for w in words_list:
                 ipa = pronunciations.get(w.lower(), "")
                 syns = synonyms.get(w.lower(), [])
-                meta_parts = []
+                meaning = _shorten_meaning(meanings.get(w.lower(), ""))
+                pos = pos_map.get(w.lower(), "")
+                inline_parts = [
+                    f"<span style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</span>"
+                ]
+                if pos:
+                    inline_parts.append(
+                        f"<span style='font-size:12px; color:#2563eb; font-weight:600;'>【{html.escape(pos)}】</span>"
+                    )
                 if ipa:
-                    meta_parts.append(
-                        f"<span style='color:#4b5563;'>/{html.escape(ipa)}/</span>"
+                    inline_parts.append(
+                        f"<span style='font-size:13px; color:#4b5563;'>/{html.escape(ipa)}/</span>"
                     )
                 if syns:
-                    meta_parts.append(
-                        f"<span style='color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
+                    inline_parts.append(
+                        f"<span style='font-size:13px; color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
                     )
-                meta_html = (
-                    f"<div style='font-size:13px; color:#4b5563; margin-top:1px; "
-                    f"display:flex; flex-wrap:wrap; gap:10px;'>{''.join(meta_parts)}</div>"
-                    if meta_parts
+                meaning_html = (
+                    f"<div style='font-size:13px; color:#374151; line-height:1.5; margin-top:2px;'>"
+                    f": {html.escape(meaning)}</div>"
+                    if meaning
                     else ""
                 )
                 words_block_html += (
-                    f"<div style='margin-bottom:10px;'>"
-                    f"<div style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</div>"
-                    f"{meta_html}"
+                    f"<div style='margin-bottom:12px;'>"
+                    f"<div style='display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;'>"
+                    f"{''.join(inline_parts)}"
+                    f"</div>"
+                    f"{meaning_html}"
                     f"</div>"
                 )
 
@@ -754,12 +863,8 @@ with tab_hist:
                 '>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
                   <div style='margin-bottom:10px;'>{words_block_html}</div>
-                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>英文</div>
-                  <div style='font-size:17px; line-height:1.5; margin-bottom:10px;'>{highlighted_english}</div>
                   <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
-                  <div style='font-size:14px; line-height:1.5; margin-bottom:10px;'>{html.escape(row["japanese"])}</div>
-                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>解説</div>
-                  <div style='font-size:13px;'>{_format_explanation_html(explanation_no_ipa)}</div>
+                  <div style='font-size:14px; line-height:1.5;'>{_highlight_japanese(row["japanese"])}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -789,34 +894,6 @@ with tab_hist:
                                 st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
 
         _reveal_section()
-
-        # ── わからない / わかる ボタンは表面・裏面ともに常時表示 ──
-        is_last = idx == len(card_rows) - 1
-        col_ng, col_ok = st.columns(2)
-        with col_ng:
-            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
-                update_status(row["id"], "review")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
-        with col_ok:
-            if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                update_status(row["id"], "mastered")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
-
-        if st.session_state.get("card_finished"):
-            st.success("🎉 このセットの最後のカードでした!")
-            if st.button("最初から", key="restart_deck", use_container_width=True):
-                st.session_state.card_index = 0
-                st.session_state.card_finished = False
-                st.session_state.pop("last_viewed_card_id", None)
-                st.rerun()
 
         with st.expander("⚙️ このカードを削除"):
             if st.button("削除する", key=f"delete_card_{row['id']}", type="secondary"):
