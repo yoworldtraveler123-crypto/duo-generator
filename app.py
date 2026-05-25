@@ -460,6 +460,70 @@ with tab_bulk:
         st.success(msg)
         st.caption("音声・画像は「履歴」タブで各カードを開いたときに生成されます(一括時はスキップ)。")
 
+    st.divider()
+    with st.expander("🔄 既存カードを3語ずつ作り直す"):
+        st.caption(
+            "今ある全カードの単語を集めて重複を除き、3語ずつの新しい例文に作り直します。"
+            "5語などの長い既存例文を短くするための一括メンテナンスです。"
+        )
+        _existing = get_all_sentences()
+        _all_words = _dedup_words(
+            [
+                w.strip().lower()
+                for row in reversed(_existing)
+                for w in row["words"].split(",")
+                if w.strip()
+            ]
+        )
+        _rebuild_groups = _chunk(_all_words, 3)
+        st.caption(
+            f"現在 {len(_existing)} カード / 単語 {len(_all_words)} 語 "
+            f"→ 3語ずつ {len(_rebuild_groups)} 文に作り直します。"
+        )
+        st.warning(
+            "⚠️ 既存カードは全て削除され、わかる/わからない等のステータスはリセットされます。"
+            "再生成のAPIコストがかかります。途中で閉じると不完全になります。"
+        )
+        _confirm = st.checkbox(
+            "内容を理解した(既存カード削除・ステータスリセット)", key="rebuild_confirm"
+        )
+        if st.button(
+            f"{len(_rebuild_groups)} 文に作り直す",
+            type="primary",
+            disabled=not (_confirm and _rebuild_groups),
+            key="rebuild_btn",
+        ):
+            _old_ids = [row["id"] for row in _existing]
+            prog = st.progress(0.0)
+            status = st.empty()
+            ok = 0
+            failed_words: list[str] = []
+            for i, grp in enumerate(_rebuild_groups, 1):
+                status.write(f"生成中… {i}/{len(_rebuild_groups)}　({', '.join(grp)})")
+                try:
+                    res = generate_sentence(grp)
+                    if res["english"]:
+                        save_sentence(grp, res["english"], res["japanese"], res["explanation"])
+                        ok += 1
+                    else:
+                        failed_words += grp
+                except Exception:
+                    failed_words += grp
+                prog.progress(i / len(_rebuild_groups))
+            status.empty()
+            prog.empty()
+            # 1文でも生成できた場合のみ旧カードを削除(全滅時はデータを守る)
+            if ok > 0:
+                for oid in _old_ids:
+                    delete_sentence(oid)
+                msg = f"完了: {ok} 文に作り直し、旧 {len(_old_ids)} カードを削除しました。"
+                if failed_words:
+                    msg += f" 生成できなかった単語(必要なら再取込): {', '.join(failed_words)}"
+                st.success(msg)
+            else:
+                st.error("1文も生成できませんでした。旧カードは削除していません。時間をおいて再実行してください。")
+
+
 def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
     """解説テキストから 単語→IPA のマップを抽出する。(単語の後の【品詞】は読み飛ばす)"""
     out: dict[str, str] = {}
