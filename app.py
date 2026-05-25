@@ -114,12 +114,13 @@ def get_or_fetch_images(row_id: int, word: str) -> list[dict]:
         save_image_data(row_id, all_data)
     return results
 
-SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。TOEIC800点以上レベルの自然なビジネス英語例文を作成します。
+SYSTEM_PROMPT = """あなたはビジネス英語の熟練講師です。短く覚えやすい自然なビジネス英語例文を作成します。
 
 ガイドライン:
+- 例文は短く覚えやすいことを最優先。1文・12〜15語以内を目安に簡潔にする
+- 関係詞や接続詞で複数の節をつなげず、平易な構文(SVO中心)にする
 - 実際のビジネスシーンで使われる自然な英語を使用する
 - 指定された単語をすべて文法的に自然な形で組み込む
-- 例文はメール、会議、プレゼンテーション等のビジネス場面を想定する
 - 和訳は自然な日本語ビジネス表現にする
 - 解説は必ず指定フォーマットを厳守する(マークダウン記法やサブ箇条書きは使わない)"""
 
@@ -138,14 +139,14 @@ def _parse_response(text: str) -> dict[str, str]:
 def generate_sentence(words: list[str]) -> dict[str, str]:
     client = anthropic.Anthropic()
     words_str = "、".join(words)
-    user_message = f"""以下の英単語を全て自然に含むビジネス英語の例文を1つ作成してください。
+    user_message = f"""以下の英単語を全て自然に含む、短く覚えやすいビジネス英語の例文を1つ作成してください。
 
 単語: {words_str}
 
 以下の形式で出力してください（見出し行はそのまま使用）：
 
 【英文】
-（ここに例文）
+（ここに例文。1文・15語以内を目安に、複文を避けて短く覚えやすく）
 
 【和訳】
 （ここに日本語訳。指定単語すべてに対応する日本語の箇所を、1単語につき必ず1箇所ずつ《》で囲む。例: tint→《色合い》、peanut→《ピーナッツ》）
@@ -810,34 +811,7 @@ with tab_hist:
                 unsafe_allow_html=True,
             )
 
-        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
-        highlighted_english = _highlight_target_words(row["english"], words_list)
-
-        # ── 音声プレイヤー(fragmentの外: 詳細トグル時に再描画させない) ──
-        should_autoplay = st.session_state.pop("autoplay_pending", False)
-        try:
-            audio_bytes = get_or_generate_audio(row["id"], row["english"])
-            st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
-        except Exception as e:
-            st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
-            _speak_button(row["english"], auto_play=should_autoplay)
-
-        # ── 英文カード(常時表示。fragment外なので詳細トグルでも再描画されない) ──
-        st.markdown(
-            f"""
-            <div style='
-                background: #fff; border: 1px solid #e5e7eb;
-                border-radius: 12px; padding: 24px; margin: 16px 0;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-            '>
-              <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
-              <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # ── わからない / わかる ボタン(英文カードの直下に固定。詳細を展開しても動かない) ──
+        # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
         is_last = idx == len(card_rows) - 1
         col_ng, col_ok = st.columns(2)
         with col_ng:
@@ -864,6 +838,33 @@ with tab_hist:
                 st.session_state.card_finished = False
                 st.session_state.pop("last_viewed_card_id", None)
                 st.rerun()
+
+        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+        highlighted_english = _highlight_target_words(row["english"], words_list)
+
+        # ── 音声プレイヤー(fragmentの外: 詳細トグル時に再描画させない) ──
+        should_autoplay = st.session_state.pop("autoplay_pending", False)
+        try:
+            audio_bytes = get_or_generate_audio(row["id"], row["english"])
+            st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
+        except Exception as e:
+            st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
+            _speak_button(row["english"], auto_play=should_autoplay)
+
+        # ── 英文カード(常時表示。fragment外なので詳細トグルでも再描画されない) ──
+        st.markdown(
+            f"""
+            <div style='
+                background: #fff; border: 1px solid #e5e7eb;
+                border-radius: 12px; padding: 24px; margin: 16px 0;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+            '>
+              <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
+              <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         # ── 詳細(表/裏)はfragment内に閉じ込めて、英文・音声・判断ボタンを再描画しない ──
         @st.fragment
