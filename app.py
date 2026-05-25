@@ -967,15 +967,63 @@ with tab_hist:
                 st.rerun()
     else:
         # ── 単語リスト表示 ──
-        st.caption("タップでカードを開く")
-        for i, row in enumerate(rows):
+        edit_mode = st.toggle("✏️ 選択して削除", key="list_edit_mode")
+        st.caption("チェックを入れて削除" if edit_mode else "タップでカードを開く")
+        # 一覧ボタン(open_card_*)だけ中身を左揃いにする(既定は中央揃いで見づらいため)
+        st.markdown(
+            "<style>"
+            "div[class*='st-key-open_card_'] button{justify-content:flex-start;text-align:left;}"
+            "div[class*='st-key-open_card_'] button p{text-align:left;width:100%;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
+
+        def _row_label(row: dict) -> str:
             words_display = " / ".join(row["words"].split(","))
-            status_icon = {"new": "🆕", "review": "🔁", "mastered": "✅"}.get(row.get("status", "new"), "🆕")
-            view_n = row.get("view_count", 0)
-            label = f"{status_icon}  {words_display}　({view_n}回)"
-            if st.button(label, key=f"open_card_{row['id']}", use_container_width=True):
-                st.session_state.card_mode_rows = rows
-                st.session_state.card_index = i
-                st.session_state.card_finished = False
-                st.session_state.pop("last_viewed_card_id", None)
+            icon = {"new": "🆕", "review": "🔁", "mastered": "✅"}.get(row.get("status", "new"), "🆕")
+            return f"{icon}  {words_display}"
+
+        if edit_mode:
+            selected_ids: list[int] = []
+            for row in rows:
+                if st.checkbox(_row_label(row), key=f"sel_{row['id']}"):
+                    selected_ids.append(row["id"])
+            n = len(selected_ids)
+
+            if st.session_state.get("confirm_bulk_delete"):
+                st.warning(f"選択した {n} 件を本当に削除しますか？この操作は元に戻せません。")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("はい、削除する", type="primary", use_container_width=True, key="do_bulk_delete"):
+                        for rid in selected_ids:
+                            delete_sentence(rid)
+                            st.session_state.pop(f"sel_{rid}", None)
+                        st.session_state.confirm_bulk_delete = False
+                        st.rerun()
+                with c2:
+                    if st.button("キャンセル", use_container_width=True, key="cancel_bulk_delete"):
+                        st.session_state.confirm_bulk_delete = False
+                        st.rerun()
+            elif st.button(
+                f"🗑️ 選択した {n} 件を削除",
+                type="secondary",
+                disabled=(n == 0),
+                use_container_width=True,
+                key="ask_bulk_delete",
+            ):
+                st.session_state.confirm_bulk_delete = True
                 st.rerun()
+        else:
+            st.session_state.confirm_bulk_delete = False
+            for i, row in enumerate(rows):
+                view_n = row.get("view_count", 0)
+                if st.button(
+                    f"{_row_label(row)}　({view_n}回)",
+                    key=f"open_card_{row['id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.card_mode_rows = rows
+                    st.session_state.card_index = i
+                    st.session_state.card_finished = False
+                    st.session_state.pop("last_viewed_card_id", None)
+                    st.rerun()
