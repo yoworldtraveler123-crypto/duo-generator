@@ -972,8 +972,9 @@ with tab_hist:
         # 一覧ボタン(open_card_*)だけ中身を左揃いにする(既定は中央揃いで見づらいため)
         st.markdown(
             "<style>"
-            "div[class*='st-key-open_card_'] button{justify-content:flex-start;text-align:left;}"
-            "div[class*='st-key-open_card_'] button p{text-align:left;width:100%;}"
+            "div[class*='st-key-open_card_'] button{justify-content:flex-start !important;text-align:left !important;}"
+            "div[class*='st-key-open_card_'] button>div,"
+            "div[class*='st-key-open_card_'] button p{text-align:left !important;width:100%;justify-content:flex-start !important;}"
             "</style>",
             unsafe_allow_html=True,
         )
