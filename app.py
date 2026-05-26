@@ -281,8 +281,14 @@ if st.session_state.get("card_mode_rows") is None:
     st.title("📚 単語ジェネ")
     st.caption("ビジネス英単語を入れて例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
 else:
+    # タブ帯を隠し、上部余白と要素間の隙間を詰めてスマホ1画面に近づける
     st.markdown(
-        "<style>div[data-testid='stTabs'] div[data-baseweb='tab-list']{display:none;}</style>",
+        "<style>"
+        "div[data-testid='stTabs'] div[data-baseweb='tab-list']{display:none;}"
+        "div[data-testid='stMainBlockContainer'],section[data-testid='stMain'] .block-container"
+        "{padding-top:1.2rem;padding-bottom:1rem;}"
+        "div[data-testid='stVerticalBlock']{gap:0.45rem;}"
+        "</style>",
         unsafe_allow_html=True,
     )
 
@@ -752,6 +758,48 @@ def _speak_button(text: str, auto_play: bool = False) -> None:
     st_html(component_html, height=50)
 
 
+def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
+    """コンパクトなカスタム音声プレイヤー(▶/⏸・±3秒・シークバー・小さい時間表示・赤系配色)。"""
+    b64 = base64.b64encode(audio_bytes).decode()
+    autoplay_js = "setTimeout(()=>a.play().catch(()=>{}),120);" if auto_play else ""
+    component_html = f"""
+    <div style="display:flex;align-items:center;gap:8px;background:#fff5f5;border:1px solid #ffd5d5;
+                border-radius:10px;padding:6px 10px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
+      <audio id="a" src="data:audio/mpeg;base64,{b64}" preload="auto"></audio>
+      <button id="bk" class="c">«3</button>
+      <button id="pp" class="c p">▶</button>
+      <button id="fw" class="c">3»</button>
+      <input id="sk" type="range" min="0" max="100" value="0" step="0.1"
+             style="flex:1;accent-color:#ff4b4b;height:4px;">
+      <span id="tm" style="font-size:10px;color:#999;min-width:54px;text-align:right;
+                           font-variant-numeric:tabular-nums;">0:00/0:00</span>
+    </div>
+    <style>
+      .c{{background:#ff4b4b;color:#fff;border:none;border-radius:6px;padding:4px 7px;
+          font-size:11px;cursor:pointer;font-weight:700;line-height:1;}}
+      .c.p{{padding:4px 10px;font-size:13px;}}
+      .c:hover{{background:#e63e3e;}}
+    </style>
+    <script>
+      const a=document.getElementById('a'),pp=document.getElementById('pp'),
+            sk=document.getElementById('sk'),tm=document.getElementById('tm');
+      const f=s=>{{s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');}};
+      function u(){{if(a.duration)sk.value=a.currentTime/a.duration*100;
+                    tm.textContent=f(a.currentTime)+'/'+f(a.duration||0);}}
+      a.addEventListener('timeupdate',u);a.addEventListener('loadedmetadata',u);
+      a.addEventListener('play',()=>pp.textContent='⏸');
+      a.addEventListener('pause',()=>pp.textContent='▶');
+      a.addEventListener('ended',()=>pp.textContent='▶');
+      pp.onclick=()=>{{a.paused?a.play():a.pause();}};
+      document.getElementById('bk').onclick=()=>{{a.currentTime=Math.max(0,a.currentTime-3);}};
+      document.getElementById('fw').onclick=()=>{{a.currentTime=Math.min(a.duration||1e9,a.currentTime+3);}};
+      sk.oninput=()=>{{if(a.duration)a.currentTime=sk.value/100*a.duration;}};
+      {autoplay_js}
+    </script>
+    """
+    st_html(component_html, height=48)
+
+
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 
@@ -802,10 +850,9 @@ with tab_hist:
         idx = max(0, min(idx, len(card_rows) - 1))
         row = card_rows[idx]
 
-        # 閲覧回数の自動カウント + カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
+        # カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
+        # (閲覧回数は「わかる/わからない」を押した時にカウントする)
         if st.session_state.get("last_viewed_card_id") != row["id"]:
-            increment_view_count(row["id"])
-            row["view_count"] = row.get("view_count", 0) + 1
             st.session_state.last_viewed_card_id = row["id"]
             st.session_state.card_revealed = False
             st.session_state.autoplay_pending = True
@@ -840,6 +887,8 @@ with tab_hist:
             with col_ng:
                 if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
                     update_status(row["id"], "review")
+                    increment_view_count(row["id"])
+                    row["view_count"] = row.get("view_count", 0) + 1
                     if is_last:
                         st.session_state.card_finished = True
                     else:
@@ -848,6 +897,8 @@ with tab_hist:
             with col_ok:
                 if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
                     update_status(row["id"], "mastered")
+                    increment_view_count(row["id"])
+                    row["view_count"] = row.get("view_count", 0) + 1
                     if is_last:
                         st.session_state.card_finished = True
                     else:
@@ -869,7 +920,7 @@ with tab_hist:
         should_autoplay = st.session_state.pop("autoplay_pending", False)
         try:
             audio_bytes = get_or_generate_audio(row["id"], row["english"])
-            st.audio(audio_bytes, format="audio/mp3", autoplay=should_autoplay)
+            _audio_player(audio_bytes, auto_play=should_autoplay)
         except Exception as e:
             st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
             _speak_button(row["english"], auto_play=should_autoplay)
@@ -879,11 +930,11 @@ with tab_hist:
             f"""
             <div style='
                 background: #fff; border: 1px solid #e5e7eb;
-                border-radius: 12px; padding: 24px; margin: 16px 0;
+                border-radius: 12px; padding: 14px 16px; margin: 6px 0;
                 box-shadow: 0 2px 10px rgba(0,0,0,0.06);
             '>
-              <div style='color:#999; font-size:12px; margin-bottom:8px;'>【英文】</div>
-              <div style='font-size:18px; line-height:1.6;'>{highlighted_english}</div>
+              <div style='color:#999; font-size:11px; margin-bottom:4px;'>【英文】</div>
+              <div style='font-size:17px; line-height:1.5;'>{highlighted_english}</div>
             </div>
             """,
             unsafe_allow_html=True,
