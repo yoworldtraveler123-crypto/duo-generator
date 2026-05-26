@@ -153,7 +153,7 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 
 【解説】
 （指定単語ごとに、必ず以下の形式で1行ずつ。1単語=1行のみ。サブ箇条書き禁止。Markdown(**, __)禁止）
-- 単語 【品詞】 /IPA発音記号/ (類義語: word1, word2, word3): コア意味を簡潔に1文で(目安25字以内、長い使い方説明は不要)。
+- 単語 【品詞】 /IPA発音記号/ (類義語: word1, word2, word3): 訳語を2〜3個だけ読点区切りで(例: 色合い、色調)。説明文にしない。「〜する動詞」等の品詞名や用法説明は書かない。
 
 ルール:
 - 品詞は単語の直後に【】で1つ置く(【動】【名】【形】【副】【前】【接】【代】等)
@@ -164,8 +164,8 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 - 和訳では指定単語すべてに対応する日本語表現を必ず1箇所ずつ《》で囲む(囲んだ《》の数=指定単語の数。1つも漏らさない。《》は和訳の中だけで使う)
 
 例(この形式で必ず出力):
-- negotiate 【動】 /nɪˈɡoʊʃieɪt/ (類義語: discuss, bargain, mediate): 商談や条件を取りまとめる交渉の動詞。
-- deadline 【名】 /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): タスク完了の最終期限。"""
+- negotiate 【動】 /nɪˈɡoʊʃieɪt/ (類義語: discuss, bargain, mediate): 交渉する、協議する
+- deadline 【名】 /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): 締切、期限"""
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
@@ -644,14 +644,16 @@ def _parse_word_meanings(explanation: str) -> dict[str, str]:
 
 
 def _shorten_meaning(text: str, limit: int = 40) -> str:
-    """単語の意味を「意味＋α」程度に短縮する。最初の1文、長すぎれば文字数で切る。"""
+    """意味を短くする。複数文の説明は最初の1文だけ、訳語列挙(句点なし)はそのまま。"""
     text = re.sub(r"\s+", " ", text.strip())
     if not text:
         return text
-    head = re.split(r"[。.]", text, maxsplit=1)[0].strip()
-    if head and len(head) <= limit:
-        return head + "。"
-    return text[:limit].rstrip() + "…"
+    # 句点の後にまだ続きがある=複数文の説明文 → 最初の1文だけにする
+    m = re.match(r"(.+?[。.])\s*\S", text)
+    if m and len(m.group(1)) <= limit + 5:
+        return m.group(1).strip()
+    # 訳語列挙や短文はそのまま(長すぎる時だけ文字数で切る)
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 def _highlight_japanese(japanese: str) -> str:
