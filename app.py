@@ -1030,11 +1030,24 @@ with tab_hist:
                     if not images:
                         st.caption("画像が見つかりませんでした。")
                     else:
-                        cols = st.columns(len(images))
-                        for c, img in zip(cols, images):
-                            with c:
-                                st.image(img["thumb"], use_container_width=True)
-                                st.caption(f"📷 [{img['photographer']}]({img['photographer_url']})")
+                        # スライドショー: 単語ごとに表示中インデックスを保持し1枚ずつ表示
+                        ikey = f"img_idx_{row['id']}_{selected_word}"
+                        i_img = max(0, min(st.session_state.get(ikey, 0), len(images) - 1))
+                        img = images[i_img]
+                        st.image(img["thumb"], use_container_width=True)
+                        st.caption(
+                            f"📷 [{img['photographer']}]({img['photographer_url']})　"
+                            f"{i_img + 1}/{len(images)}"
+                        )
+                        cprev, cnext = st.columns(2)
+                        with cprev:
+                            if st.button("◀ 前", use_container_width=True, key=f"img_prev_{row['id']}"):
+                                st.session_state[ikey] = (i_img - 1) % len(images)
+                                st.rerun(scope="fragment")
+                        with cnext:
+                            if st.button("次 ▶", use_container_width=True, key=f"img_next_{row['id']}"):
+                                st.session_state[ikey] = (i_img + 1) % len(images)
+                                st.rerun(scope="fragment")
 
         _reveal_section()
 
