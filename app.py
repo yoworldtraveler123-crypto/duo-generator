@@ -285,6 +285,7 @@ else:
     st.markdown(
         "<style>"
         "div[data-testid='stTabs'] div[data-baseweb='tab-list']{display:none;}"
+        "header[data-testid='stHeader']{display:none;}"
         "div[data-testid='stMainBlockContainer'],section[data-testid='stMain'] .block-container"
         "{padding-top:1.2rem;padding-bottom:1rem;}"
         "div[data-testid='stVerticalBlock']{gap:0.45rem;}"
@@ -594,7 +595,7 @@ def _highlight_target_words(english: str, words: list[str]) -> str:
     alt = "|".join(re.escape(w) for w in clean_words)
     pattern = re.compile(rf"\b({alt}){suffix}\b", re.IGNORECASE)
     return pattern.sub(
-        lambda m: f"<span style='color:#ff4b4b; font-weight:700;'>{m.group(0)}</span>",
+        lambda m: f"<span style='color:#e07b3c; font-weight:700;'>{m.group(0)}</span>",
         escaped,
     )
 
@@ -674,7 +675,7 @@ def _highlight_japanese(japanese: str) -> str:
     escaped = html.escape(japanese)
     return re.sub(
         r"《(.+?)》",
-        lambda m: f"<span style='color:#ff4b4b; font-weight:700;'>{m.group(1)}</span>",
+        lambda m: f"<span style='color:#e07b3c; font-weight:700;'>{m.group(1)}</span>",
         escaped,
     )
 
@@ -711,7 +712,7 @@ def _speak_button(text: str, auto_play: bool = False) -> None:
     component_html = f"""
     <div style="margin: 8px 0;">
       <button id="speak-btn" style="
-        background: #ff4b4b; color: white; border: none;
+        background: #e8975a; color: white; border: none;
         padding: 8px 16px; border-radius: 6px; font-size: 14px;
         cursor: pointer; font-weight: 600;
       ">🔊 英文を聞く</button>
@@ -770,15 +771,15 @@ def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
       <button id="pp" class="c p">▶</button>
       <button id="fw" class="c">3»</button>
       <input id="sk" type="range" min="0" max="100" value="0" step="0.1"
-             style="flex:1;accent-color:#ff4b4b;height:4px;">
+             style="flex:1;accent-color:#e8975a;height:4px;">
       <span id="tm" style="font-size:10px;color:#999;min-width:54px;text-align:right;
                            font-variant-numeric:tabular-nums;">0:00/0:00</span>
     </div>
     <style>
-      .c{{background:#ff4b4b;color:#fff;border:none;border-radius:6px;padding:4px 7px;
+      .c{{background:#e8975a;color:#fff;border:none;border-radius:6px;padding:4px 7px;
           font-size:11px;cursor:pointer;font-weight:700;line-height:1;}}
       .c.p{{padding:4px 10px;font-size:13px;}}
-      .c:hover{{background:#e63e3e;}}
+      .c:hover{{background:#dd8a4b;}}
     </style>
     <script>
       const a=document.getElementById('a'),pp=document.getElementById('pp'),
@@ -878,6 +879,9 @@ with tab_hist:
             "<style>"
             "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
             "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
+            # わかる: 濃い赤をやめ穏やかなオレンジに
+            "div.st-key-mark_mastered button{background:#e8975a !important;border-color:#e8975a !important;color:#fff !important;}"
+            "div.st-key-mark_mastered button:hover{background:#dd8a4b !important;border-color:#dd8a4b !important;}"
             "</style>",
             unsafe_allow_html=True,
         )
@@ -885,7 +889,7 @@ with tab_hist:
         with st.container(key="judge_buttons"):
             col_ng, col_ok = st.columns(2)
             with col_ng:
-                if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
+                if st.button("✕ わからない", key="mark_review", type="secondary", use_container_width=True):
                     update_status(row["id"], "review")
                     increment_view_count(row["id"])
                     row["view_count"] = row.get("view_count", 0) + 1
@@ -895,7 +899,7 @@ with tab_hist:
                         st.session_state.card_index = idx + 1
                     st.rerun()
             with col_ok:
-                if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                if st.button("✓ わかる", key="mark_mastered", type="primary", use_container_width=True):
                     update_status(row["id"], "mastered")
                     increment_view_count(row["id"])
                     row["view_count"] = row.get("view_count", 0) + 1
