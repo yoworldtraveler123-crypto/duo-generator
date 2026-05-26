@@ -1064,6 +1064,17 @@ with tab_hist:
             return f"{icon}  {words_display}"
 
         if edit_mode:
+            ca, cb = st.columns(2)
+            with ca:
+                if st.button("全選択", use_container_width=True, key="sel_all_btn"):
+                    for r in rows:
+                        st.session_state[f"sel_{r['id']}"] = True
+                    st.rerun()
+            with cb:
+                if st.button("全解除", use_container_width=True, key="sel_none_btn"):
+                    for r in rows:
+                        st.session_state[f"sel_{r['id']}"] = False
+                    st.rerun()
             selected_ids: list[int] = []
             for row in rows:
                 if st.checkbox(_row_label(row), key=f"sel_{row['id']}"):
