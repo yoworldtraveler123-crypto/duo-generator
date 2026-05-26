@@ -814,24 +814,33 @@ with tab_hist:
             )
 
         # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
+        # スマホ幅でも縦積みせず左右に並べる(Streamlit既定は狭幅で縦折り返し)
+        st.markdown(
+            "<style>"
+            "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
+            "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
+            "</style>",
+            unsafe_allow_html=True,
+        )
         is_last = idx == len(card_rows) - 1
-        col_ng, col_ok = st.columns(2)
-        with col_ng:
-            if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
-                update_status(row["id"], "review")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
-        with col_ok:
-            if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                update_status(row["id"], "mastered")
-                if is_last:
-                    st.session_state.card_finished = True
-                else:
-                    st.session_state.card_index = idx + 1
-                st.rerun()
+        with st.container(key="judge_buttons"):
+            col_ng, col_ok = st.columns(2)
+            with col_ng:
+                if st.button("❌ わからない", key="mark_review", type="secondary", use_container_width=True):
+                    update_status(row["id"], "review")
+                    if is_last:
+                        st.session_state.card_finished = True
+                    else:
+                        st.session_state.card_index = idx + 1
+                    st.rerun()
+            with col_ok:
+                if st.button("✅ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                    update_status(row["id"], "mastered")
+                    if is_last:
+                        st.session_state.card_finished = True
+                    else:
+                        st.session_state.card_index = idx + 1
+                    st.rerun()
 
         if st.session_state.get("card_finished"):
             st.success("🎉 このセットの最後のカードでした!")
