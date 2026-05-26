@@ -801,6 +801,30 @@ def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
     st_html(component_html, height=48)
 
 
+def _image_carousel(images: list[dict]) -> None:
+    """画像をスワイプ(横スクロール)で1枚ずつ見れるカルーセル。スマホのスワイプに対応。"""
+    cards = ""
+    for img in images:
+        thumb = html.escape(img["thumb"])
+        photog = html.escape(img.get("photographer", ""))
+        purl = html.escape(img.get("photographer_url", "#"))
+        cards += (
+            "<div style='scroll-snap-align:start;flex:0 0 100%;box-sizing:border-box;'>"
+            f"<img src='{thumb}' style='width:100%;height:200px;object-fit:cover;"
+            "border-radius:8px;display:block;'>"
+            "<div style='font-size:10px;color:#999;margin-top:3px;'>📷 "
+            f"<a href='{purl}' target='_blank' style='color:#999;'>{photog}</a></div>"
+            "</div>"
+        )
+    carousel = (
+        "<div style='display:flex;overflow-x:auto;scroll-snap-type:x mandatory;"
+        "gap:0;-webkit-overflow-scrolling:touch;scrollbar-width:none;'>"
+        f"{cards}</div>"
+        "<div style='font-size:10px;color:#bbb;text-align:center;margin-top:2px;'>← スワイプで切替 →</div>"
+    )
+    st_html(carousel, height=240)
+
+
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 
@@ -1030,24 +1054,7 @@ with tab_hist:
                     if not images:
                         st.caption("画像が見つかりませんでした。")
                     else:
-                        # スライドショー: 単語ごとに表示中インデックスを保持し1枚ずつ表示
-                        ikey = f"img_idx_{row['id']}_{selected_word}"
-                        i_img = max(0, min(st.session_state.get(ikey, 0), len(images) - 1))
-                        img = images[i_img]
-                        st.image(img["thumb"], use_container_width=True)
-                        st.caption(
-                            f"📷 [{img['photographer']}]({img['photographer_url']})　"
-                            f"{i_img + 1}/{len(images)}"
-                        )
-                        cprev, cnext = st.columns(2)
-                        with cprev:
-                            if st.button("◀ 前", use_container_width=True, key=f"img_prev_{row['id']}"):
-                                st.session_state[ikey] = (i_img - 1) % len(images)
-                                st.rerun(scope="fragment")
-                        with cnext:
-                            if st.button("次 ▶", use_container_width=True, key=f"img_next_{row['id']}"):
-                                st.session_state[ikey] = (i_img + 1) % len(images)
-                                st.rerun(scope="fragment")
+                        _image_carousel(images)
 
         _reveal_section()
 
