@@ -276,8 +276,15 @@ def _chunk(lst: list, n: int = 3) -> list[list]:
 
 # ── ページ設定 ────────────────────────────────────────────
 st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide")
-st.title("📚 単語ジェネ")
-st.caption("ビジネス英単語を入れて例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
+# フラッシュカード学習中はタイトル/概要/タブ帯を隠してカードに集中させる
+if st.session_state.get("card_mode_rows") is None:
+    st.title("📚 単語ジェネ")
+    st.caption("ビジネス英単語を入れて例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
+else:
+    st.markdown(
+        "<style>div[data-testid='stTabs'] div[data-baseweb='tab-list']{display:none;}</style>",
+        unsafe_allow_html=True,
+    )
 
 init_db()
 
@@ -751,19 +758,24 @@ FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習す
 
 # ── タブ: 学習(カード一覧・復習) ───────────────────────────────────────────
 with tab_hist:
-    filter_choice = st.radio(
-        "表示するカード",
-        options=list(FILTER_LABEL.keys()),
-        format_func=lambda k: FILTER_LABEL[k],
-        horizontal=True,
-        key="status_filter",
-    )
-
-    search_query = st.text_input(
-        "キーワード検索（単語から）",
-        placeholder="例: negotiate",
-        key="hist_search",
-    )
+    # カード学習中はフィルタ/検索を隠す(邪魔なので)。一覧の時だけ表示する。
+    in_card_mode = st.session_state.get("card_mode_rows") is not None
+    if in_card_mode:
+        filter_choice = "all"
+        search_query = ""
+    else:
+        filter_choice = st.radio(
+            "表示するカード",
+            options=list(FILTER_LABEL.keys()),
+            format_func=lambda k: FILTER_LABEL[k],
+            horizontal=True,
+            key="status_filter",
+        )
+        search_query = st.text_input(
+            "キーワード検索（単語から）",
+            placeholder="例: negotiate",
+            key="hist_search",
+        )
 
     if search_query:
         base_rows = search_sentences(search_query)
@@ -773,7 +785,7 @@ with tab_hist:
     else:
         rows = get_sentences_by_status(filter_choice if filter_choice != "all" else None)
 
-    if rows:
+    if rows and not in_card_mode:
         view_counts = [r.get("view_count", 0) for r in rows]
         lap_count = min(view_counts) if view_counts else 0
         st.caption(
