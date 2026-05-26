@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 
@@ -455,6 +456,7 @@ with tab_bulk:
         prog = st.progress(0.0)
         status = st.empty()
         ok, ng = 0, 0
+        errors: list[str] = []
         for i, grp in enumerate(groups, 1):
             status.write(f"生成中… {i}/{len(groups)}　({', '.join(grp)})")
             try:
@@ -464,15 +466,22 @@ with tab_bulk:
                     ok += 1
                 else:
                     ng += 1
-            except Exception:
+                    if len(errors) < 3:
+                        errors.append(f"{', '.join(grp)} → 解析失敗(不適切判定など)")
+            except Exception as e:
                 ng += 1
+                if len(errors) < 3:
+                    errors.append(f"{', '.join(grp)} → {type(e).__name__}: {e}")
             prog.progress(i / len(groups))
+            time.sleep(0.4)  # レート制限回避のため少し間隔を空ける
         status.empty()
         prog.empty()
         msg = f"完了: {ok} 文を保存しました。"
         if ng:
-            msg += f" 生成できなかったのが {ng} 文あります(不適切判定など)。"
-        st.success(msg)
+            msg += f" 生成できなかったのが {ng} 文あります。"
+        (st.success if ok else st.error)(msg)
+        if errors:
+            st.warning("エラー例(最初の数件):\n\n" + "\n".join(f"- {e}" for e in errors))
         st.caption("音声・画像は「学習」タブで各カードを開いたときに生成されます(一括時はスキップ)。")
 
     st.divider()
@@ -816,13 +825,27 @@ def _image_carousel(images: list[dict]) -> None:
             f"<a href='{purl}' target='_blank' style='color:#999;'>{photog}</a></div>"
             "</div>"
         )
-    carousel = (
-        "<div style='display:flex;overflow-x:auto;scroll-snap-type:x mandatory;"
-        "gap:0;-webkit-overflow-scrolling:touch;scrollbar-width:none;'>"
-        f"{cards}</div>"
-        "<div style='font-size:10px;color:#bbb;text-align:center;margin-top:2px;'>← スワイプで切替 →</div>"
-    )
-    st_html(carousel, height=240)
+    carousel = f"""
+    <div id="car" style="display:flex;overflow-x:auto;scroll-snap-type:x mandatory;
+         gap:0;-webkit-overflow-scrolling:touch;scrollbar-width:none;">{cards}</div>
+    <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-top:5px;">
+      <button id="pv" class="nav">◀</button>
+      <span style="font-size:10px;color:#bbb;">スワイプ / ◀▶ で切替</span>
+      <button id="nx" class="nav">▶</button>
+    </div>
+    <style>
+      #car::-webkit-scrollbar{{display:none;}}
+      .nav{{background:#e8975a;color:#fff;border:none;border-radius:6px;
+            padding:3px 12px;font-size:13px;cursor:pointer;font-weight:700;}}
+      .nav:hover{{background:#dd8a4b;}}
+    </style>
+    <script>
+      const c=document.getElementById('car');
+      document.getElementById('pv').onclick=()=>c.scrollBy({{left:-c.clientWidth,behavior:'smooth'}});
+      document.getElementById('nx').onclick=()=>c.scrollBy({{left:c.clientWidth,behavior:'smooth'}});
+    </script>
+    """
+    st_html(carousel, height=258)
 
 
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
