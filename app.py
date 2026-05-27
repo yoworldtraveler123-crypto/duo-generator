@@ -835,9 +835,10 @@ def _image_carousel(images: list[dict]) -> None:
         photog = html.escape(img.get("photographer", ""))
         purl = html.escape(img.get("photographer_url", "#"))
         cards += (
-            "<div style='scroll-snap-align:start;flex:0 0 100%;box-sizing:border-box;'>"
-            f"<img src='{thumb}' style='width:100%;height:200px;object-fit:cover;"
-            "border-radius:8px;display:block;'>"
+            "<div style='scroll-snap-align:start;flex:0 0 100%;box-sizing:border-box;"
+            "text-align:center;padding:0 8px;'>"
+            f"<img src='{thumb}' style='width:100%;max-width:360px;height:280px;object-fit:cover;"
+            "border-radius:8px;display:block;margin:0 auto;'>"
             "<div style='font-size:10px;color:#999;margin-top:3px;'>📷 "
             f"<a href='{purl}' target='_blank' style='color:#999;'>{photog}</a></div>"
             "</div>"
@@ -862,7 +863,7 @@ def _image_carousel(images: list[dict]) -> None:
       document.getElementById('nx').onclick=()=>c.scrollBy({{left:c.clientWidth,behavior:'smooth'}});
     </script>
     """
-    st_html(carousel, height=258)
+    st_html(carousel, height=345)
 
 
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
