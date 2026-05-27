@@ -739,9 +739,9 @@ def _speak_button(text: str, auto_play: bool = False) -> None:
     <div style="margin: 8px 0;">
       <button id="speak-btn" style="
         background: #e8975a; color: white; border: none;
-        padding: 8px 16px; border-radius: 6px; font-size: 14px;
-        cursor: pointer; font-weight: 600;
-      ">🔊 英文を聞く</button>
+        padding: 12px 20px; border-radius: 8px; font-size: 16px;
+        cursor: pointer; font-weight: 700; width: 100%;
+      ">🔊 タップして英文を聞く</button>
     </div>
     <script>
       const PREFERRED = [
@@ -782,7 +782,7 @@ def _speak_button(text: str, auto_play: bool = False) -> None:
       {auto_block}
     </script>
     """
-    st_html(component_html, height=50)
+    st_html(component_html, height=60)
 
 
 def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
@@ -804,7 +804,7 @@ def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
     <style>
       .c{{background:#e8975a;color:#fff;border:none;border-radius:6px;padding:4px 7px;
           font-size:11px;cursor:pointer;font-weight:700;line-height:1;}}
-      .c.p{{padding:4px 10px;font-size:13px;}}
+      .c.p{{padding:9px 18px;font-size:19px;border-radius:8px;}}
       .c:hover{{background:#dd8a4b;}}
     </style>
     <script>
@@ -824,7 +824,7 @@ def _audio_player(audio_bytes: bytes, auto_play: bool = False) -> None:
       {autoplay_js}
     </script>
     """
-    st_html(component_html, height=48)
+    st_html(component_html, height=54)
 
 
 def _image_carousel(images: list[dict]) -> None:
@@ -1003,7 +1003,7 @@ with tab_hist:
                 box-shadow: 0 2px 10px rgba(0,0,0,0.06);
             '>
               <div style='color:#999; font-size:11px; margin-bottom:4px;'>【英文】</div>
-              <div style='font-size:17px; line-height:1.5;'>{highlighted_english}</div>
+              <div style='font-size:21px; line-height:1.55; font-weight:500;'>{highlighted_english}</div>
             </div>
             """,
             unsafe_allow_html=True,
