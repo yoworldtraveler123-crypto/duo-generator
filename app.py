@@ -594,6 +594,23 @@ def _strip_ipa(text: str) -> str:
     return text
 
 
+def _order_words_by_sentence(words: list[str], english: str) -> list[str]:
+    """学習対象単語を英文中の初出順に並べ替える(語形変化込み)。
+    英文に見つからない単語は元の順序のまま末尾に置く。"""
+    suffix = "(s|es|ed|ing|er|est|ly|ies|ied|ier|iest|d)?"
+    text = english or ""
+    big = len(text) + 1
+
+    def first_pos(w: str) -> int:
+        wc = w.strip()
+        if not wc:
+            return big
+        m = re.search(rf"\b{re.escape(wc)}{suffix}\b", text, re.IGNORECASE)
+        return m.start() if m else big
+
+    return sorted(words, key=first_pos)  # 安定ソート: 同順位(未検出含む)は元の順を保持
+
+
 def _highlight_target_words(english: str, words: list[str]) -> str:
     """英文中の学習対象単語(語形変化込み)を赤色強調する。HTML文字列を返す。"""
     clean_words = sorted({w.strip() for w in words if w.strip()}, key=len, reverse=True)
@@ -965,6 +982,7 @@ with tab_hist:
                 st.rerun()
 
         words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+        words_list = _order_words_by_sentence(words_list, row["english"])
         highlighted_english = _highlight_target_words(row["english"], words_list)
 
         # ── 音声プレイヤー(fragmentの外: 詳細トグル時に再描画させない) ──
