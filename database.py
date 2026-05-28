@@ -93,6 +93,16 @@ def save_audio_blob(row_id: int, audio_bytes: bytes) -> None:
         conn.execute("UPDATE sentences SET audio_blob = ? WHERE id = ?", (audio_bytes, row_id))
 
 
+def update_sentence_content(row_id: int, english: str, japanese: str, explanation: str) -> None:
+    """例文・和訳・解説を上書きする。英文が変わるので音声キャッシュ(audio_blob)もクリアする。
+    閲覧回数・ステータス・単語リスト・画像は保持する。"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE sentences SET english=?, japanese=?, explanation=?, audio_blob=NULL WHERE id=?",
+            (english, japanese, explanation, row_id),
+        )
+
+
 def get_image_data(row_id: int) -> dict:
     """指定IDの画像URLマップを取得。未保存なら空辞書。"""
     import json as _json
