@@ -1014,29 +1014,6 @@ with tab_hist:
             unsafe_allow_html=True,
         )
 
-        # ── 別の例文で作り直す(同じ単語で再生成。閲覧回数・ステータスは保持) ──
-        if st.button("🔄 別の例文で作り直す", key=f"regen_{row['id']}"):
-            with st.spinner("新しい例文を生成中..."):
-                try:
-                    regen = generate_sentence(row["words"].split(","))
-                except Exception as e:
-                    st.error(f"生成エラー: {e}")
-                else:
-                    if regen.get("english"):
-                        update_sentence_content(
-                            row["id"], regen["english"], regen["japanese"], regen["explanation"]
-                        )
-                        # メモリ上のカード(card_mode_rows)も更新して即反映する
-                        row["english"] = regen["english"]
-                        row["japanese"] = regen["japanese"]
-                        row["explanation"] = regen["explanation"]
-                        st.session_state.card_mode_rows[idx] = row
-                        st.session_state.card_revealed = False
-                        st.session_state.autoplay_pending = True
-                        st.rerun()
-                    else:
-                        st.error("生成結果が空でした。もう一度お試しください。")
-
         # ── 詳細(表/裏)はfragment内に閉じ込めて、英文・音声・判断ボタンを再描画しない ──
         @st.fragment
         def _reveal_section():
@@ -1124,6 +1101,29 @@ with tab_hist:
                         st.caption("画像が見つかりませんでした。")
                     else:
                         _image_carousel(images)
+
+            # ── 裏面の最後: 別の例文で作り直す(同じ単語で再生成。閲覧回数・ステータスは保持) ──
+            st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 別の例文で作り直す", key=f"regen_{row['id']}", type="secondary"):
+                with st.spinner("新しい例文を生成中..."):
+                    try:
+                        regen = generate_sentence(row["words"].split(","))
+                    except Exception as e:
+                        st.error(f"生成エラー: {e}")
+                    else:
+                        if regen.get("english"):
+                            update_sentence_content(
+                                row["id"], regen["english"], regen["japanese"], regen["explanation"]
+                            )
+                            row["english"] = regen["english"]
+                            row["japanese"] = regen["japanese"]
+                            row["explanation"] = regen["explanation"]
+                            st.session_state.card_mode_rows[idx] = row
+                            st.session_state.card_revealed = False
+                            st.session_state.autoplay_pending = True
+                            st.rerun()
+                        else:
+                            st.error("生成結果が空でした。もう一度お試しください。")
 
         _reveal_section()
 
