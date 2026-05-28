@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""単語ジェネ - TOEFL/アカデミック英単語から例文を生成するStreamlit Web App"""
+"""単語ジェネ - IELTS/アカデミック英単語から例文を生成するStreamlit Web App"""
 
 import base64
 import hashlib
@@ -116,16 +116,16 @@ def get_or_fetch_images(row_id: int, word: str) -> list[dict]:
         save_image_data(row_id, all_data)
     return results
 
-SYSTEM_PROMPT = """あなたはTOEFL・アカデミック英語の語彙講師です。短く覚えやすい自然な英語例文を作成します。
+SYSTEM_PROMPT = """あなたはIELTS・アカデミック英語の語彙講師です。短く覚えやすい自然な英語例文を作成します。
 
 ガイドライン:
 - 例文は短く覚えやすいことを最優先。1文・12〜15語以内を目安に簡潔にする
 - 関係詞や接続詞で複数の節をつなげず、平易な構文(SVO中心)にする
-- TOEFLや大学の講義・教科書に出るアカデミックで自然な英語にする(自然科学・歴史・社会科学・環境・技術などの話題)
+- IELTSや大学の講義・教科書に出るアカデミックで自然な英語にする(自然科学・歴史・社会科学・環境・技術などの話題)
 - 指定された単語をすべて文法的に自然な形で組み込む
 - 指定語が互いに無関係でも、現実にありそうな1つの話題・場面を想定し、その文脈の中で各語を自然に使う
 - 単語名を引用・列挙する文(例: 「AかBかCか議論した」)は禁止。語を詰め込むための無理な構文を避け、ネイティブが実際に書く・話す自然さを最優先する
-- 各単語の訳語・意味は、TOEFLやアカデミックな文章で問われる主要な意味を優先する。例文での特殊な用法に引きずられず、辞書の中心的な語義を示す
+- 各単語の訳語・意味は、IELTSやアカデミックな文章で問われる主要な意味を優先する。例文での特殊な用法に引きずられず、辞書の中心的な語義を示す
 - 和訳は自然な日本語にする
 - 解説は必ず指定フォーマットを厳守する(マークダウン記法やサブ箇条書きは使わない)"""
 
@@ -144,7 +144,7 @@ def _parse_response(text: str) -> dict[str, str]:
 def generate_sentence(words: list[str]) -> dict[str, str]:
     client = anthropic.Anthropic()
     words_str = "、".join(words)
-    user_message = f"""以下の英単語を全て自然に含む、短く覚えやすいアカデミック英語(TOEFLレベル)の例文を1つ作成してください。
+    user_message = f"""以下の英単語を全て自然に含む、短く覚えやすいアカデミック英語(IELTSレベル)の例文を1つ作成してください。
 
 単語: {words_str}
 
@@ -284,7 +284,7 @@ st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide"
 # フラッシュカード学習中はタイトル/概要/タブ帯を隠してカードに集中させる
 if st.session_state.get("card_mode_rows") is None:
     st.title("📚 単語ジェネ")
-    st.caption("英単語を入れてTOEFL/アカデミックな例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
+    st.caption("英単語を入れてIELTS/アカデミックな例文を生成。覚えにくい単語をまとめて1文に詰め込んで定着させるためのツール。")
 else:
     # タブ帯を隠し、上部余白と要素間の隙間を詰めてスマホ1画面に近づける
     st.markdown(
