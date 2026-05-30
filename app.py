@@ -288,7 +288,7 @@ if not st.user.is_logged_in:
     st.title("📚 単語ジェネ")
     st.caption("英単語を入れてIELTS/アカデミックな例文を生成するツールです。")
     st.info("ご利用にはログインが必要です。")
-    st.button("Googleでログイン", on_click=st.login, type="primary")
+    st.button("Googleでログイン", on_click=st.login, args=("google",), type="primary")
     st.stop()
 
 # ログイン済み: サイドバーにアカウント情報とログアウト
