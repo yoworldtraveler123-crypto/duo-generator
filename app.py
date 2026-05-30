@@ -282,19 +282,9 @@ def _chunk(lst: list, n: int = 3) -> list[list]:
 # ── ページ設定 ────────────────────────────────────────────
 st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide")
 
-# ── ログインゲート: 未ログインなら本体を出さず止める ──
-# secrets の [auth] 設定が前提。Google OIDC でログインしたユーザーだけが先へ進める。
-if not st.user.is_logged_in:
-    st.title("📚 単語ジェネ")
-    st.caption("英単語を入れてIELTS/アカデミックな例文を生成するツールです。")
-    st.info("ご利用にはログインが必要です。")
-    st.button("Googleでログイン", on_click=st.login, args=("google",), type="primary")
-    st.stop()
-
-# ログイン済み: サイドバーにアカウント情報とログアウト
-with st.sidebar:
-    st.caption(f"ログイン中\n\n{getattr(st.user, 'email', '') or st.user.get('name', '')}")
-    st.button("ログアウト", on_click=st.logout, use_container_width=True)
+# NOTE: Google ログインゲート(st.login)は Streamlit Community Cloud の
+# OAuth callback 構造問題で動かないため一旦無効化。別ホスティング移行時に復活させる
+# (実装は git commit 752e012 を参照)。
 
 # フラッシュカード学習中はタイトル/概要/タブ帯を隠してカードに集中させる
 if st.session_state.get("card_mode_rows") is None:
