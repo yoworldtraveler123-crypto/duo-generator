@@ -173,7 +173,7 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
 - deadline 【名】 /ˈdedlaɪn/ (類義語: due date, cutoff, time limit): 締切、期限"""
 
     response = client.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-haiku-4-5",
         max_tokens=1024,
         temperature=0.7,
         system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
