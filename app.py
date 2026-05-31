@@ -280,15 +280,7 @@ def _chunk(lst: list, n: int = 3) -> list[list]:
 
 
 # ── ページ設定 ────────────────────────────────────────────
-st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide")
-
-# DEBUG(一時): Streamlitが実際に読んでいる [auth] のキーを確認。原因切り分け後に削除。
-import sys as _sys
-try:
-    _auth_dbg = dict(st.secrets.get("auth", {}))
-    print("DEBUG_AUTH_KEYS:", sorted(_auth_dbg.keys()), "redirect=", _auth_dbg.get("redirect_uri", "MISSING"), file=_sys.stderr, flush=True)
-except Exception as _e:
-    print("DEBUG_AUTH_ERR:", repr(_e), file=_sys.stderr, flush=True)
+st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide", initial_sidebar_state="collapsed")
 
 # ── ログインゲート: 未ログインなら本体を出さず止める(Render上で有効) ──
 if not st.user.is_logged_in:
