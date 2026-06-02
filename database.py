@@ -15,6 +15,11 @@ from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "history.db"
+
+# 一覧表示用のカラム。重い audio_blob(mp3バイナリ) と image_data(JSON) は除外する。
+# これらは個別に get_audio_blob(id) / get_image_data(id) でカードを開いた時だけ取得する。
+# Turso(リモートDB)では SELECT * が全カードの音声を毎回ネットワーク転送して激重になるため。
+_LIST_COLS = "id, created_at, words, english, japanese, explanation, status, view_count"
 _TURSO_URL = os.getenv("TURSO_DATABASE_URL")
 _TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 _USE_TURSO = bool(_TURSO_URL)
@@ -84,7 +89,7 @@ def save_sentence(words: list[str], english: str, japanese: str, explanation: st
 
 def get_all_sentences() -> list[dict]:
     with _connect() as conn:
-        cur = conn.execute("SELECT * FROM sentences ORDER BY created_at DESC")
+        cur = conn.execute(f"SELECT {_LIST_COLS} FROM sentences ORDER BY created_at DESC")
         return _dicts(cur)
 
 
@@ -92,7 +97,7 @@ def search_sentences(keyword: str) -> list[dict]:
     like = f"%{keyword}%"
     with _connect() as conn:
         cur = conn.execute(
-            "SELECT * FROM sentences WHERE english LIKE ? OR japanese LIKE ? OR words LIKE ? ORDER BY created_at DESC",
+            f"SELECT {_LIST_COLS} FROM sentences WHERE english LIKE ? OR japanese LIKE ? OR words LIKE ? ORDER BY created_at DESC",
             (like, like, like),
         )
         return _dicts(cur)
@@ -165,10 +170,10 @@ def get_sentences_by_status(status: str | None) -> list[dict]:
     """statusで絞り込んだ履歴を取得。None or 'all' なら全件。"""
     with _connect() as conn:
         if status in (None, "all"):
-            cur = conn.execute("SELECT * FROM sentences ORDER BY created_at DESC")
+            cur = conn.execute(f"SELECT {_LIST_COLS} FROM sentences ORDER BY created_at DESC")
         else:
             cur = conn.execute(
-                "SELECT * FROM sentences WHERE status = ? ORDER BY created_at DESC",
+                f"SELECT {_LIST_COLS} FROM sentences WHERE status = ? ORDER BY created_at DESC",
                 (status,),
             )
         return _dicts(cur)
