@@ -2,7 +2,7 @@ services:
   - type: web
     name: duo-generator
     runtime: python
-    plan: free
+    plan: starter
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: mkdir -p .streamlit && cp /etc/secrets/secrets.toml .streamlit/secrets.toml && streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true

@@ -1,6 +1,7 @@
 .env
 _secrets_auth_paste.txt
 history.db
+turso_replica.db*
 __pycache__/
 *.pyc
 .DS_Store
