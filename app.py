@@ -23,14 +23,13 @@ from database import (
     get_image_data,
     get_sentences_by_status,
     get_used_words,
-    increment_view_count,
     init_db,
+    mark_status_and_view,
     save_audio_blob,
     save_image_data,
     save_sentence,
     search_sentences,
     update_sentence_content,
-    update_status,
 )
 
 load_dotenv()
@@ -973,8 +972,7 @@ with tab_hist:
             col_ng, col_ok = st.columns(2)
             with col_ng:
                 if st.button("✕ わからない", key="mark_review", type="secondary", use_container_width=True):
-                    update_status(row["id"], "review")
-                    increment_view_count(row["id"])
+                    mark_status_and_view(row["id"], "review")
                     row["view_count"] = row.get("view_count", 0) + 1
                     if is_last:
                         st.session_state.card_finished = True
@@ -983,8 +981,7 @@ with tab_hist:
                     st.rerun()
             with col_ok:
                 if st.button("✓ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                    update_status(row["id"], "mastered")
-                    increment_view_count(row["id"])
+                    mark_status_and_view(row["id"], "mastered")
                     row["view_count"] = row.get("view_count", 0) + 1
                     if is_last:
                         st.session_state.card_finished = True

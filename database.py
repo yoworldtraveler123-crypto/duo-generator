@@ -143,6 +143,18 @@ def increment_view_count(row_id: int) -> None:
         conn.execute("UPDATE sentences SET view_count = view_count + 1 WHERE id = ?", (row_id,))
 
 
+def mark_status_and_view(row_id: int, status: str) -> None:
+    """ステータス更新と閲覧回数+1を1接続・1syncでまとめて行う(カードめくりの高速化)。
+    従来は update_status + increment_view_count で Turso へ2回pushしていた。"""
+    if status not in {"new", "review", "mastered"}:
+        raise ValueError(f"invalid status: {status}")
+    with _connect(sync=True) as conn:
+        conn.execute(
+            "UPDATE sentences SET status = ?, view_count = view_count + 1 WHERE id = ?",
+            (status, row_id),
+        )
+
+
 def get_audio_blob(row_id: int) -> bytes | None:
     """指定IDの音声バイナリ(mp3)を取得。未生成なら None。"""
     with _connect() as conn:
