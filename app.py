@@ -302,11 +302,16 @@ else:
     # タブ帯を隠し、上部余白と要素間の隙間を詰めてスマホ1画面に近づける
     st.markdown(
         "<style>"
-        "div[data-testid='stTabs'] div[data-baseweb='tab-list']{display:none;}"
+        "div.st-key-active_tab{display:none;}"  # 学習中はタブ切替(segmented control)を隠す
         "header[data-testid='stHeader']{display:none;}"
         "div[data-testid='stMainBlockContainer'],section[data-testid='stMain'] .block-container"
         "{padding-top:1.2rem;padding-bottom:1rem;}"
         "div[data-testid='stVerticalBlock']{gap:0.45rem;}"
+        # 判断ボタンのスタイル(毎フリップ再注入せず、カード入場時のこの全体再実行で一度だけ入れる)
+        "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
+        "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
+        "div.st-key-mark_mastered button{background:#e8975a !important;border-color:#e8975a !important;color:#fff !important;}"
+        "div.st-key-mark_mastered button:hover{background:#dd8a4b !important;border-color:#dd8a4b !important;}"
         "</style>",
         unsafe_allow_html=True,
     )
@@ -576,6 +581,7 @@ if _active_tab == "一括取込":
                 st.error("1文も生成できませんでした。旧カードは削除していません。時間をおいて再実行してください。")
 
 
+@st.cache_data(show_spinner=False)
 def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
     """解説テキストから 単語→IPA のマップを抽出する。(単語の後の【品詞】は読み飛ばす)"""
     out: dict[str, str] = {}
@@ -586,6 +592,7 @@ def _parse_word_pronunciations(explanation: str) -> dict[str, str]:
     return out
 
 
+@st.cache_data(show_spinner=False)
 def _parse_word_synonyms(explanation: str) -> dict[str, list[str]]:
     """解説テキストから 単語→類義語リスト のマップを抽出する。(単語の後の【品詞】は読み飛ばす)"""
     out: dict[str, list[str]] = {}
@@ -602,6 +609,7 @@ def _parse_word_synonyms(explanation: str) -> dict[str, list[str]]:
     return out
 
 
+@st.cache_data(show_spinner=False)
 def _parse_word_pos(explanation: str) -> dict[str, str]:
     """解説テキストから 単語→品詞(動/名/形 等) のマップを抽出する。"""
     out: dict[str, str] = {}
@@ -685,6 +693,7 @@ def _format_explanation_html(explanation: str) -> str:
     return f"<ul style='margin:0; padding-left:18px;'>{''.join(items)}</ul>"
 
 
+@st.cache_data(show_spinner=False)
 def _parse_word_meanings(explanation: str) -> dict[str, str]:
     """解説テキストから 単語→意味(コア意味・使い方) のマップを抽出する。
 
@@ -978,15 +987,8 @@ if _active_tab == "学習":
                 )
 
             # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
-            st.markdown(
-                "<style>"
-                "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
-                "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
-                "div.st-key-mark_mastered button{background:#e8975a !important;border-color:#e8975a !important;color:#fff !important;}"
-                "div.st-key-mark_mastered button:hover{background:#dd8a4b !important;border-color:#dd8a4b !important;}"
-                "</style>",
-                unsafe_allow_html=True,
-            )
+            # ボタンのCSSはトップ(カード入場時の全体再実行)で一度だけ注入済み。
+            # ここで毎フリップ注入しないことで fragment 再実行を軽くする。
             is_last = idx == len(card_rows) - 1
             with st.container(key="judge_buttons"):
                 col_ng, col_ok = st.columns(2)
