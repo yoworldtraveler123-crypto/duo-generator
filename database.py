@@ -15,6 +15,7 @@ from __future__ import annotations  # `bytes | None` 等の注釈を Python 3.9 
 
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -33,12 +34,57 @@ _USE_TURSO = bool(_TURSO_URL)
 # init_db() は Streamlit の再実行ごとに呼ばれるが、起動時の pull 同期は一度だけにする。
 _initialized = False
 
+# バックグラウンド sync の調停用。書き込み後の Turso への push を UI から切り離す。
+_sync_state_lock = threading.Lock()
+_syncing = False       # 現在 sync スレッドが走っているか
+_sync_again = False    # sync 中に新しい書き込みが来たら、終わった後もう一度回す
+
+
+def _sync_worker() -> None:
+    """ローカル複製の変更を Turso へ push する。専用スレッドで実行(UIをブロックしない)。
+    自前のコネクションをこのスレッド内で作って使うのでスレッド安全。"""
+    global _syncing, _sync_again
+    import libsql_experimental as libsql
+
+    while True:
+        try:
+            conn = libsql.connect(
+                str(_REPLICA_PATH), sync_url=_TURSO_URL, auth_token=_TURSO_TOKEN
+            )
+            try:
+                conn.sync()
+            finally:
+                conn.close()
+        except Exception:
+            pass  # ネットワーク失敗等。次の書き込み時に再度試みられる
+        with _sync_state_lock:
+            if _sync_again:
+                _sync_again = False
+                continue  # 走行中に来た書き込みをまとめて反映
+            _syncing = False
+            return
+
+
+def _trigger_sync() -> None:
+    """書き込み後に Turso への push をバックグラウンドで起動する。
+    既に sync 中なら二重起動せず、終了後にもう一度回すフラグを立てる(コアレス)。"""
+    global _syncing, _sync_again
+    if not _USE_TURSO:
+        return
+    with _sync_state_lock:
+        if _syncing:
+            _sync_again = True
+            return
+        _syncing = True
+    threading.Thread(target=_sync_worker, daemon=True).start()
+
 
 @contextmanager
 def _connect(sync: bool = False):
     """DB接続を返す。with を抜ける時に commit し、必ず close する。
     本番は Turso の embedded replica(ローカル複製)、ローカル開発は SQLite。
-    sync=True の時だけ、書き込みを Turso へ push する(読み込みでは呼ばない)。"""
+    sync=True の書き込みは、close 後に **バックグラウンドで** Turso へ push する
+    (同期完了を待たないのでボタン操作が即座に返る)。読み込みでは push しない。"""
     if _USE_TURSO:
         import libsql_experimental as libsql
 
@@ -50,13 +96,13 @@ def _connect(sync: bool = False):
     try:
         yield conn
         conn.commit()
-        if sync and _USE_TURSO:
-            conn.sync()  # ローカルの変更を Turso へ反映(永続化)
     finally:
         try:
             conn.close()
         except Exception:
             pass
+    if sync and _USE_TURSO:
+        _trigger_sync()  # ローカルは保存済み。Turso への反映は後追い(非ブロッキング)
 
 
 def _dicts(cur) -> list[dict]:
