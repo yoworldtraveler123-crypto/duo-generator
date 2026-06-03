@@ -313,10 +313,21 @@ else:
 
 init_db()
 
-tab_hist, tab_gen, tab_bulk = st.tabs(["学習", "生成", "一括取込"])
+# タブ切り替え。st.tabs は全タブの中身を毎回実行してしまい、Streamlitの
+# 「クリックごとに全スクリプト再実行」と相まって重い。選択中のタブだけを
+# if で実行し、非アクティブな2タブ(数百行)の再描画を丸ごと省く。
+_active_tab = st.segmented_control(
+    "タブ",
+    ["学習", "生成", "一括取込"],
+    default="学習",
+    key="active_tab",
+    label_visibility="collapsed",
+)
+if _active_tab is None:  # 何も選ばれていない瞬間は学習にフォールバック
+    _active_tab = "学習"
 
 # ── タブ1: 生成 ───────────────────────────────────────────
-with tab_gen:
+if _active_tab == "生成":
     st.subheader("英単語を入力して例文を生成")
 
     with st.expander("📷 画像から単語を抽出"):
@@ -416,7 +427,7 @@ with tab_gen:
                 st.error(f"エラーが発生しました: {e}")
 
 # ── タブ: 一括取込 ─────────────────────────────────────────
-with tab_bulk:
+if _active_tab == "一括取込":
     st.subheader("単語リストから一括で例文を生成")
     st.caption(
         "abceed の Web版(app.abceed.com)で苦手単語の一覧を開き、選択してコピー → 下の欄に貼り付け。"
@@ -888,7 +899,7 @@ FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習す
 
 
 # ── タブ: 学習(カード一覧・復習) ───────────────────────────────────────────
-with tab_hist:
+if _active_tab == "学習":
     # カード学習中はフィルタ/検索を隠す(邪魔なので)。一覧の時だけ表示する。
     in_card_mode = st.session_state.get("card_mode_rows") is not None
     if in_card_mode:
