@@ -945,222 +945,220 @@ if _active_tab == "学習":
         st.session_state.pop("card_mode_rows", None)
     elif st.session_state.get("card_mode_rows") is not None:
         # ── フラッシュカードモード ──
-        card_rows = st.session_state.card_mode_rows
-        idx = st.session_state.get("card_index", 0)
-        idx = max(0, min(idx, len(card_rows) - 1))
-        row = card_rows[idx]
+        # 学習画面まるごとを fragment 化し、めくり等の操作ではこの中だけ再実行する
+        # (scope="fragment")。学習タブ全体(フィルタ/DB読み込み)を再実行しないので、
+        # カード送りが軽くなる。fragmentは入れ子不可のため、以前の「詳細を見る」
+        # fragmentもここへ統合した。一覧に戻る/削除だけはアプリ全体を再実行する。
+        @st.fragment
+        def _flashcard_fragment():
+            card_rows = st.session_state.card_mode_rows
+            idx = max(0, min(st.session_state.get("card_index", 0), len(card_rows) - 1))
+            row = card_rows[idx]
 
-        # カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
-        # (閲覧回数は「わかる/わからない」を押した時にカウントする)
-        if st.session_state.get("last_viewed_card_id") != row["id"]:
-            st.session_state.last_viewed_card_id = row["id"]
-            st.session_state.card_revealed = False
-            st.session_state.autoplay_pending = True
+            # カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
+            # (閲覧回数は「わかる/わからない」を押した時にカウントする)
+            if st.session_state.get("last_viewed_card_id") != row["id"]:
+                st.session_state.last_viewed_card_id = row["id"]
+                st.session_state.card_revealed = False
+                st.session_state.autoplay_pending = True
 
-        col_back, col_count = st.columns([1, 2])
-        with col_back:
-            if st.button("← 一覧に戻る", key="back_to_list"):
-                st.session_state.pop("card_mode_rows", None)
-                st.session_state.pop("card_index", None)
-                st.session_state.pop("last_viewed_card_id", None)
-                st.rerun()
-        with col_count:
+            col_back, col_count = st.columns([1, 2])
+            with col_back:
+                if st.button("← 一覧に戻る", key="back_to_list"):
+                    st.session_state.pop("card_mode_rows", None)
+                    st.session_state.pop("card_index", None)
+                    st.session_state.pop("last_viewed_card_id", None)
+                    st.rerun()  # 一覧へ戻るのでアプリ全体を再実行
+            with col_count:
+                st.markdown(
+                    f"<div style='text-align:right; padding-top:8px; color:#666;'>"
+                    f"{idx + 1} / {len(card_rows)}　|　閲覧 {row.get('view_count', 0)}回"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
             st.markdown(
-                f"<div style='text-align:right; padding-top:8px; color:#666;'>"
-                f"{idx + 1} / {len(card_rows)}　|　閲覧 {row.get('view_count', 0)}回"
-                f"</div>",
+                "<style>"
+                "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
+                "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
+                "div.st-key-mark_mastered button{background:#e8975a !important;border-color:#e8975a !important;color:#fff !important;}"
+                "div.st-key-mark_mastered button:hover{background:#dd8a4b !important;border-color:#dd8a4b !important;}"
+                "</style>",
                 unsafe_allow_html=True,
             )
+            is_last = idx == len(card_rows) - 1
+            with st.container(key="judge_buttons"):
+                col_ng, col_ok = st.columns(2)
+                with col_ng:
+                    if st.button("✕ わからない", key="mark_review", type="secondary", use_container_width=True):
+                        mark_status_and_view(row["id"], "review")
+                        row["view_count"] = row.get("view_count", 0) + 1
+                        if is_last:
+                            st.session_state.card_finished = True
+                        else:
+                            st.session_state.card_index = idx + 1
+                        st.rerun(scope="fragment")
+                with col_ok:
+                    if st.button("✓ わかる", key="mark_mastered", type="primary", use_container_width=True):
+                        mark_status_and_view(row["id"], "mastered")
+                        row["view_count"] = row.get("view_count", 0) + 1
+                        if is_last:
+                            st.session_state.card_finished = True
+                        else:
+                            st.session_state.card_index = idx + 1
+                        st.rerun(scope="fragment")
 
-        # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
-        # スマホ幅でも縦積みせず左右に並べる(Streamlit既定は狭幅で縦折り返し)
-        st.markdown(
-            "<style>"
-            "div.st-key-judge_buttons div[data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:8px;}"
-            "div.st-key-judge_buttons div[data-testid='stColumn']{min-width:0;}"
-            # わかる: 濃い赤をやめ穏やかなオレンジに
-            "div.st-key-mark_mastered button{background:#e8975a !important;border-color:#e8975a !important;color:#fff !important;}"
-            "div.st-key-mark_mastered button:hover{background:#dd8a4b !important;border-color:#dd8a4b !important;}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
-        is_last = idx == len(card_rows) - 1
-        with st.container(key="judge_buttons"):
-            col_ng, col_ok = st.columns(2)
-            with col_ng:
-                if st.button("✕ わからない", key="mark_review", type="secondary", use_container_width=True):
-                    mark_status_and_view(row["id"], "review")
-                    row["view_count"] = row.get("view_count", 0) + 1
-                    if is_last:
-                        st.session_state.card_finished = True
-                    else:
-                        st.session_state.card_index = idx + 1
-                    st.rerun()
-            with col_ok:
-                if st.button("✓ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                    mark_status_and_view(row["id"], "mastered")
-                    row["view_count"] = row.get("view_count", 0) + 1
-                    if is_last:
-                        st.session_state.card_finished = True
-                    else:
-                        st.session_state.card_index = idx + 1
-                    st.rerun()
-
-        if st.session_state.get("card_finished"):
-            st.success("🎉 このセットの最後のカードでした!")
-            if st.button("最初から", key="restart_deck", use_container_width=True):
-                st.session_state.card_index = 0
-                st.session_state.card_finished = False
-                st.session_state.pop("last_viewed_card_id", None)
-                st.rerun()
-
-        words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
-        words_list = _order_words_by_sentence(words_list, row["english"])
-        highlighted_english = _highlight_target_words(row["english"], words_list)
-
-        # ── 音声プレイヤー(fragmentの外: 詳細トグル時に再描画させない) ──
-        should_autoplay = st.session_state.pop("autoplay_pending", False)
-        try:
-            audio_bytes = get_or_generate_audio(row["id"], row["english"])
-            _audio_player(audio_bytes, auto_play=should_autoplay)
-        except Exception as e:
-            st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
-            _speak_button(row["english"], auto_play=should_autoplay)
-
-        # ── 英文カード(常時表示。fragment外なので詳細トグルでも再描画されない) ──
-        st.markdown(
-            f"""
-            <div style='
-                background: #fff; border: 1px solid #e5e7eb;
-                border-radius: 12px; padding: 14px 16px; margin: 6px 0;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-            '>
-              <div style='color:#999; font-size:11px; margin-bottom:4px;'>【英文】</div>
-              <div style='font-size:21px; line-height:1.55; font-weight:500;'>{highlighted_english}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # ── 詳細(表/裏)はfragment内に閉じ込めて、英文・音声・判断ボタンを再描画しない ──
-        @st.fragment
-        def _reveal_section():
-            revealed = st.session_state.get("card_revealed", False)
-
-            if not revealed:
-                if st.button("詳細を見る", key="reveal_card", use_container_width=True):
-                    st.session_state.card_revealed = True
+            if st.session_state.get("card_finished"):
+                st.success("🎉 このセットの最後のカードでした!")
+                if st.button("最初から", key="restart_deck", use_container_width=True):
+                    st.session_state.card_index = 0
+                    st.session_state.card_finished = False
+                    st.session_state.pop("last_viewed_card_id", None)
                     st.rerun(scope="fragment")
-                return
 
-            # 裏面: 単語(発音・類義語・意味を1行に統合) + 和訳
-            pronunciations = _parse_word_pronunciations(row["explanation"])
-            synonyms = _parse_word_synonyms(row["explanation"])
-            meanings = _parse_word_meanings(row["explanation"])
-            pos_map = _parse_word_pos(row["explanation"])
+            words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
+            words_list = _order_words_by_sentence(words_list, row["english"])
+            highlighted_english = _highlight_target_words(row["english"], words_list)
 
-            words_block_html = ""
-            for w in words_list:
-                ipa = pronunciations.get(w.lower(), "")
-                syns = synonyms.get(w.lower(), [])
-                meaning = _shorten_meaning(meanings.get(w.lower(), ""))
-                pos = pos_map.get(w.lower(), "")
-                inline_parts = [
-                    f"<span style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</span>"
-                ]
-                if pos:
-                    inline_parts.append(
-                        f"<span style='font-size:12px; color:#2563eb; font-weight:600;'>【{html.escape(pos)}】</span>"
-                    )
-                if ipa:
-                    inline_parts.append(
-                        f"<span style='font-size:13px; color:#4b5563;'>/{html.escape(ipa)}/</span>"
-                    )
-                if syns:
-                    inline_parts.append(
-                        f"<span style='font-size:13px; color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
-                    )
-                meaning_html = (
-                    f"<div style='font-size:13px; color:#374151; line-height:1.4; margin-top:0;'>"
-                    f": {html.escape(meaning)}</div>"
-                    if meaning
-                    else ""
-                )
-                words_block_html += (
-                    f"<div style='margin-bottom:7px;'>"
-                    f"<div style='display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;'>"
-                    f"{''.join(inline_parts)}"
-                    f"</div>"
-                    f"{meaning_html}"
-                    f"</div>"
-                )
+            # ── 音声プレイヤー ──
+            should_autoplay = st.session_state.pop("autoplay_pending", False)
+            try:
+                audio_bytes = get_or_generate_audio(row["id"], row["english"])
+                _audio_player(audio_bytes, auto_play=should_autoplay)
+            except Exception as e:
+                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
+                _speak_button(row["english"], auto_play=should_autoplay)
 
+            # ── 英文カード(常時表示) ──
             st.markdown(
                 f"""
                 <div style='
                     background: #fff; border: 1px solid #e5e7eb;
-                    border-radius: 10px; padding: 14px 16px; margin: 8px 0;
+                    border-radius: 12px; padding: 14px 16px; margin: 6px 0;
                     box-shadow: 0 2px 10px rgba(0,0,0,0.06);
                 '>
-                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
-                  <div style='margin-bottom:10px;'>{words_block_html}</div>
-                  <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
-                  <div style='font-size:14px; line-height:1.5;'>{_highlight_japanese(row["japanese"])}</div>
+                  <div style='color:#999; font-size:11px; margin-bottom:4px;'>【英文】</div>
+                  <div style='font-size:21px; line-height:1.55; font-weight:500;'>{highlighted_english}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
+            # ── 詳細(裏面) ──
+            if not st.session_state.get("card_revealed", False):
+                if st.button("詳細を見る", key="reveal_card", use_container_width=True):
+                    st.session_state.card_revealed = True
+                    st.rerun(scope="fragment")
+            else:
+                pronunciations = _parse_word_pronunciations(row["explanation"])
+                synonyms = _parse_word_synonyms(row["explanation"])
+                meanings = _parse_word_meanings(row["explanation"])
+                pos_map = _parse_word_pos(row["explanation"])
+
+                words_block_html = ""
+                for w in words_list:
+                    ipa = pronunciations.get(w.lower(), "")
+                    syns = synonyms.get(w.lower(), [])
+                    meaning = _shorten_meaning(meanings.get(w.lower(), ""))
+                    pos = pos_map.get(w.lower(), "")
+                    inline_parts = [
+                        f"<span style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</span>"
+                    ]
+                    if pos:
+                        inline_parts.append(
+                            f"<span style='font-size:12px; color:#2563eb; font-weight:600;'>【{html.escape(pos)}】</span>"
+                        )
+                    if ipa:
+                        inline_parts.append(
+                            f"<span style='font-size:13px; color:#4b5563;'>/{html.escape(ipa)}/</span>"
+                        )
+                    if syns:
+                        inline_parts.append(
+                            f"<span style='font-size:13px; color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
+                        )
+                    meaning_html = (
+                        f"<div style='font-size:13px; color:#374151; line-height:1.4; margin-top:0;'>"
+                        f": {html.escape(meaning)}</div>"
+                        if meaning
+                        else ""
+                    )
+                    words_block_html += (
+                        f"<div style='margin-bottom:7px;'>"
+                        f"<div style='display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;'>"
+                        f"{''.join(inline_parts)}"
+                        f"</div>"
+                        f"{meaning_html}"
+                        f"</div>"
+                    )
+
                 st.markdown(
-                    "<div style='color:#999; font-size:11px; margin-top:8px; margin-bottom:4px;'>🖼️ 単語のイメージ</div>",
+                    f"""
+                    <div style='
+                        background: #fff; border: 1px solid #e5e7eb;
+                        border-radius: 10px; padding: 14px 16px; margin: 8px 0;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+                    '>
+                      <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
+                      <div style='margin-bottom:10px;'>{words_block_html}</div>
+                      <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
+                      <div style='font-size:14px; line-height:1.5;'>{_highlight_japanese(row["japanese"])}</div>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
-                selected_word = st.radio(
-                    "単語",
-                    words_list,
-                    horizontal=True,
-                    key=f"img_word_{row['id']}",
-                    label_visibility="collapsed",
-                )
-                if selected_word:
-                    images = get_or_fetch_images(row["id"], selected_word)
-                    if not images:
-                        st.caption("画像が見つかりませんでした。")
-                    else:
-                        _image_carousel(images)
 
-            # ── 裏面の最後: 別の例文で作り直す(同じ単語で再生成。閲覧回数・ステータスは保持) ──
-            st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 別の例文で作り直す", key=f"regen_{row['id']}", type="secondary"):
-                with st.spinner("新しい例文を生成中..."):
-                    try:
-                        regen = generate_sentence(row["words"].split(","))
-                    except Exception as e:
-                        st.error(f"生成エラー: {e}")
-                    else:
-                        if regen.get("english"):
-                            update_sentence_content(
-                                row["id"], regen["english"], regen["japanese"], regen["explanation"]
-                            )
-                            row["english"] = regen["english"]
-                            row["japanese"] = regen["japanese"]
-                            row["explanation"] = regen["explanation"]
-                            st.session_state.card_mode_rows[idx] = row
-                            st.session_state.card_revealed = False
-                            st.session_state.autoplay_pending = True
-                            st.rerun()
+                if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
+                    st.markdown(
+                        "<div style='color:#999; font-size:11px; margin-top:8px; margin-bottom:4px;'>🖼️ 単語のイメージ</div>",
+                        unsafe_allow_html=True,
+                    )
+                    selected_word = st.radio(
+                        "単語",
+                        words_list,
+                        horizontal=True,
+                        key=f"img_word_{row['id']}",
+                        label_visibility="collapsed",
+                    )
+                    if selected_word:
+                        images = get_or_fetch_images(row["id"], selected_word)
+                        if not images:
+                            st.caption("画像が見つかりませんでした。")
                         else:
-                            st.error("生成結果が空でした。もう一度お試しください。")
+                            _image_carousel(images)
 
-        _reveal_section()
+                # ── 別の例文で作り直す(同じ単語で再生成。閲覧回数・ステータスは保持) ──
+                st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 別の例文で作り直す", key=f"regen_{row['id']}", type="secondary"):
+                    with st.spinner("新しい例文を生成中..."):
+                        try:
+                            regen = generate_sentence(row["words"].split(","))
+                        except Exception as e:
+                            st.error(f"生成エラー: {e}")
+                        else:
+                            if regen.get("english"):
+                                update_sentence_content(
+                                    row["id"], regen["english"], regen["japanese"], regen["explanation"]
+                                )
+                                row["english"] = regen["english"]
+                                row["japanese"] = regen["japanese"]
+                                row["explanation"] = regen["explanation"]
+                                st.session_state.card_mode_rows[idx] = row
+                                st.session_state.card_revealed = False
+                                st.session_state.autoplay_pending = True
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error("生成結果が空でした。もう一度お試しください。")
 
-        with st.expander("⚙️ このカードを削除"):
-            if st.button("削除する", key=f"delete_card_{row['id']}", type="secondary"):
-                delete_sentence(row["id"])
-                st.session_state.pop("card_mode_rows", None)
-                st.session_state.pop("card_index", None)
-                st.rerun()
+            with st.expander("⚙️ このカードを削除"):
+                if st.button("削除する", key=f"delete_card_{row['id']}", type="secondary"):
+                    delete_sentence(row["id"])
+                    st.session_state.pop("card_mode_rows", None)
+                    st.session_state.pop("card_index", None)
+                    st.rerun()  # 一覧へ戻るのでアプリ全体を再実行
+
+        _flashcard_fragment()
+
     else:
         # ── 単語リスト表示 ──
         edit_mode = st.toggle("✏️ 選択して削除", key="list_edit_mode")
