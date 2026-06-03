@@ -916,6 +916,12 @@ with tab_hist:
     else:
         rows = get_sentences_by_status(filter_choice if filter_choice != "all" else None)
 
+    # フィルタ/検索が変わったら履歴のページを先頭に戻す
+    _hist_sig = (filter_choice, search_query)
+    if st.session_state.get("hist_filter_sig") != _hist_sig:
+        st.session_state.hist_filter_sig = _hist_sig
+        st.session_state.hist_page = 0
+
     if rows and not in_card_mode:
         view_counts = [r.get("view_count", 0) for r in rows]
         lap_count = min(view_counts) if view_counts else 0
@@ -1163,6 +1169,38 @@ with tab_hist:
             icon = {"new": "🆕", "review": "🔁", "mastered": "✅"}.get(row.get("status", "new"), "🆕")
             return f"{icon}  {words_display}"
 
+        # ── ページング ──
+        # Streamlitは再実行のたびに全カードぶんのボタンを作り直すため、
+        # 表示を1ページ分に絞って描画コスト(=体感の重さ)を抑える。
+        # カードめくりは card_mode_rows=rows(全件) なので全体を辿れる。
+        PAGE_SIZE = 20
+        total = len(rows)
+        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        page = max(0, min(st.session_state.get("hist_page", 0), total_pages - 1))
+        st.session_state.hist_page = page
+        start = page * PAGE_SIZE
+        page_rows = rows[start : start + PAGE_SIZE]
+
+        def _page_nav(key_prefix: str) -> None:
+            if total_pages <= 1:
+                return
+            pc1, pc2, pc3 = st.columns([1, 2, 1])
+            with pc1:
+                if st.button("← 前", use_container_width=True, disabled=(page == 0), key=f"{key_prefix}_prev"):
+                    st.session_state.hist_page = page - 1
+                    st.rerun()
+            with pc2:
+                st.markdown(
+                    f"<div style='text-align:center;padding-top:8px;color:#666;'>"
+                    f"{start + 1}–{min(start + PAGE_SIZE, total)} / {total}件　({page + 1}/{total_pages}ページ)"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with pc3:
+                if st.button("次 →", use_container_width=True, disabled=(page >= total_pages - 1), key=f"{key_prefix}_next"):
+                    st.session_state.hist_page = page + 1
+                    st.rerun()
+
         if edit_mode:
             ca, cb = st.columns(2)
             with ca:
@@ -1175,11 +1213,14 @@ with tab_hist:
                     for r in rows:
                         st.session_state[f"sel_{r['id']}"] = False
                     st.rerun()
-            selected_ids: list[int] = []
-            for row in rows:
-                if st.checkbox(_row_label(row), key=f"sel_{row['id']}"):
-                    selected_ids.append(row["id"])
+            _page_nav("edit_top")
+            # チェックボックスは現在ページ分だけ描画する。選択状態は session_state に
+            # 残るので、選択IDは全件を走査して集計する(ページをまたいでも選択は保持)。
+            for row in page_rows:
+                st.checkbox(_row_label(row), key=f"sel_{row['id']}")
+            selected_ids: list[int] = [r["id"] for r in rows if st.session_state.get(f"sel_{r['id']}")]
             n = len(selected_ids)
+            _page_nav("edit_bottom")
 
             if st.session_state.get("confirm_bulk_delete"):
                 st.warning(f"選択した {n} 件を本当に削除しますか？この操作は元に戻せません。")
@@ -1206,7 +1247,8 @@ with tab_hist:
                 st.rerun()
         else:
             st.session_state.confirm_bulk_delete = False
-            for i, row in enumerate(rows):
+            _page_nav("list_top")
+            for offset, row in enumerate(page_rows):
                 view_n = row.get("view_count", 0)
                 if st.button(
                     f"{_row_label(row)}　({view_n}回)",
@@ -1214,7 +1256,8 @@ with tab_hist:
                     use_container_width=True,
                 ):
                     st.session_state.card_mode_rows = rows
-                    st.session_state.card_index = i
+                    st.session_state.card_index = start + offset  # 全件中のグローバルindex
                     st.session_state.card_finished = False
                     st.session_state.pop("last_viewed_card_id", None)
                     st.rerun()
+            _page_nav("list_bottom")
