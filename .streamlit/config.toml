@@ -1,0 +1,4 @@
+# 静的ファイル配信を有効化。./static/ のファイルが /app/static/<name> で配信される。
+# PWAのmanifest.json / アイコンPNGの配信に使う。
+[server]
+enableStaticServing = true

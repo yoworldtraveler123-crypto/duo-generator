@@ -1,0 +1,15 @@
+{
+  "name": "単語ジェネ",
+  "short_name": "単語ジェネ",
+  "description": "IELTS/アカデミック語彙を例文で覚える単語ジェネレーター",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#e8975a",
+  "icons": [
+    { "src": "/app/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/app/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/app/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,5 +1,6 @@
 .env
 _secrets_auth_paste.txt
+.streamlit/secrets.toml
 history.db
 turso_replica.db*
 __pycache__/

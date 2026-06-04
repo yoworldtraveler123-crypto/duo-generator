@@ -316,6 +316,34 @@ else:
         unsafe_allow_html=True,
     )
 
+# ── PWA化: ホーム画面に「アプリっぽく」追加できるよう、manifestとiOS用メタタグを
+#    親ドキュメントの<head>へ注入する(Streamlitは<head>を直接編集できないのでJSで)。
+#    セッションに1度だけ実行(再実行ごとのiframe生成・重複注入を避ける)。
+if not st.session_state.get("_pwa_injected"):
+    st_html(
+        """
+        <script>
+        const head = window.parent.document.head;
+        const add = (tag, attrs) => {
+            const el = window.parent.document.createElement(tag);
+            for (const k in attrs) el.setAttribute(k, attrs[k]);
+            head.appendChild(el);
+        };
+        if (!window.parent.document.querySelector('link[rel="manifest"]')) {
+            add('link', {rel: 'manifest', href: '/app/static/manifest.json'});
+            add('link', {rel: 'apple-touch-icon', href: '/app/static/icon-180.png'});
+            add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
+            add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
+            add('meta', {name: 'apple-mobile-web-app-title', content: '単語ジェネ'});
+            add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent'});
+            add('meta', {name: 'theme-color', content: '#e8975a'});
+        }
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state._pwa_injected = True
+
 init_db()
 
 # タブ切り替え。st.tabs は全タブの中身を毎回実行してしまい、Streamlitの
