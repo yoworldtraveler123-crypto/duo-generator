@@ -335,7 +335,7 @@ if not st.session_state.get("_pwa_injected"):
             add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
             add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
             add('meta', {name: 'apple-mobile-web-app-title', content: '単語ジェネ'});
-            add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'black-translucent'});
+            add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'default'});
             add('meta', {name: 'theme-color', content: '#e8975a'});
         }
         </script>
