@@ -201,6 +201,64 @@ def mark_status_and_view(row_id: int, status: str) -> None:
         )
 
 
+def mark_judgments_batch(items: list[tuple[int, str, int]]) -> None:
+    """カード学習中に溜めた「わかる/わからない」判定をまとめてDBに反映する。
+    items は (row_id, status, inc) のリスト。inc はそのカードを判定した回数(=view_count加算分)。
+    1接続・1syncでまとめて書くことで、Tursoへのpushを学習セッションあたり1回に抑える。
+    めくり毎にサーバー往復していた従来方式を置き換える。"""
+    valid = [(i, s, n) for (i, s, n) in items if s in {"new", "review", "mastered"} and n > 0]
+    if not valid:
+        return
+    with _connect(sync=True) as conn:
+        for row_id, status, inc in valid:
+            conn.execute(
+                "UPDATE sentences SET status = ?, view_count = view_count + ? WHERE id = ?",
+                (status, inc, row_id),
+            )
+
+
+def get_audio_blobs(ids: list[int]) -> dict[int, bytes]:
+    """指定ID群の音声バイナリを一括取得。audio_blobがあるものだけ {id: bytes} で返す。
+    デッキ構築時にmp3を静的ファイルへ書き出す用途。1接続でまとめて読む。"""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    out: dict[int, bytes] = {}
+    with _connect() as conn:
+        cur = conn.execute(
+            f"SELECT id, audio_blob FROM sentences WHERE id IN ({placeholders}) AND audio_blob IS NOT NULL",
+            tuple(ids),
+        )
+        for rid, blob in cur.fetchall():
+            if blob:
+                out[int(rid)] = bytes(blob)
+    return out
+
+
+def get_image_data_batch(ids: list[int]) -> dict[int, dict]:
+    """指定ID群の画像URLマップを一括取得。{id: {word: [画像情報,...]}}。
+    APIは叩かず保存済みのものだけ返す(未取得の単語は空)。"""
+    import json as _json
+
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    out: dict[int, dict] = {}
+    with _connect() as conn:
+        cur = conn.execute(
+            f"SELECT id, image_data FROM sentences WHERE id IN ({placeholders}) AND image_data IS NOT NULL",
+            tuple(ids),
+        )
+        for rid, data in cur.fetchall():
+            if not data:
+                continue
+            try:
+                out[int(rid)] = _json.loads(data)
+            except (ValueError, TypeError):
+                pass
+    return out
+
+
 def get_audio_blob(row_id: int) -> bytes | None:
     """指定IDの音声バイナリ(mp3)を取得。未生成なら None。"""
     with _connect() as conn:

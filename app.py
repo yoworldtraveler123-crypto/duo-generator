@@ -10,6 +10,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import anthropic
 import streamlit as st
@@ -20,10 +21,13 @@ from database import (
     delete_sentence,
     get_all_sentences,
     get_audio_blob,
+    get_audio_blobs,
     get_image_data,
+    get_image_data_batch,
     get_sentences_by_status,
     get_used_words,
     init_db,
+    mark_judgments_batch,
     mark_status_and_view,
     save_audio_blob,
     save_image_data,
@@ -31,6 +35,11 @@ from database import (
     search_sentences,
     update_sentence_content,
 )
+
+try:
+    from streamlit_js_eval import streamlit_js_eval
+except Exception:  # 依存が未導入の環境でもアプリ自体は起動できるようにする
+    streamlit_js_eval = None
 
 load_dotenv()
 
@@ -281,8 +290,12 @@ def _chunk(lst: list, n: int = 3) -> list[list]:
 # ── ページ設定 ────────────────────────────────────────────
 st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide", initial_sidebar_state="collapsed")
 
+# ローカル動作確認用の認証バイパス。環境変数 WG_LOCAL_NOAUTH=1 の時だけログインを飛ばす。
+# 本番(Render)では設定しないので影響なし。コミット時はこのフラグを残しても安全。
+_LOCAL_NOAUTH = os.getenv("WG_LOCAL_NOAUTH") == "1"
+
 # ── ログインゲート: 未ログインなら本体を出さず止める(Render上で有効) ──
-if not st.user.is_logged_in:
+if not _LOCAL_NOAUTH and not st.user.is_logged_in:
     st.title("📚 単語ジェネ")
     st.caption("英単語を入れてIELTS/アカデミックな例文を生成するツールです。")
     st.info("ご利用にはログインが必要です。")
@@ -291,8 +304,11 @@ if not st.user.is_logged_in:
 
 # ログイン済み: サイドバーにアカウント情報とログアウト
 with st.sidebar:
-    st.caption(f"ログイン中\n\n{getattr(st.user, 'email', '') or st.user.get('name', '')}")
-    st.button("ログアウト", on_click=st.logout, use_container_width=True)
+    if _LOCAL_NOAUTH:
+        st.caption("ローカル確認モード(認証バイパス)")
+    else:
+        st.caption(f"ログイン中\n\n{getattr(st.user, 'email', '') or st.user.get('name', '')}")
+        st.button("ログアウト", on_click=st.logout, use_container_width=True)
 
 # フラッシュカード学習中はタイトル/概要/タブ帯を隠してカードに集中させる
 if st.session_state.get("card_mode_rows") is None:
@@ -931,12 +947,318 @@ def _image_carousel(images: list[dict]) -> None:
     st_html(carousel, height=345)
 
 
+# ── 学習デッキのクライアントサイド化 ──────────────────────────────────────
+# 学習中の頻繁な操作(めくり・詳細表示・音声・画像・わかる/わからない)を1つの
+# iframe内でJSだけで完結させ、サーバー往復をゼロにする。判定はlocalStorageに溜め、
+# 「戻る/作り直す/削除」やデッキ入退場の節目でまとめてPython側が回収する。
+_AUDIO_DIR = Path(__file__).parent / "static" / "audio"
+_AUDIO_ON_DISK: set[int] = set()  # プロセス内で書き出し済みのid(再書き出しを避ける)
+
+
+def _materialize_audio(ids: list[int]) -> set[int]:
+    """各IDの音声blobを static/audio/{id}.mp3 へ書き出し、URL参照できるようにする。
+    全件base64でiframeに埋めると初回マウントが激重になるのを避けるための仕組み。
+    既に書き出し済み(プロセス内)はスキップ。戻り値=音声を持つidの集合。"""
+    need = [i for i in ids if i not in _AUDIO_ON_DISK]
+    if need:
+        try:
+            _AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+            for rid, blob in get_audio_blobs(need).items():
+                try:
+                    (_AUDIO_DIR / f"{rid}.mp3").write_bytes(blob)
+                    _AUDIO_ON_DISK.add(rid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return {i for i in ids if i in _AUDIO_ON_DISK}
+
+
+def _build_deck(rows: list[dict]) -> list[dict]:
+    """card_mode_rows からクライアント側デッキ用のJSONデータを組み立てる。
+    解説のパースは @st.cache_data 済みの関数を使うので使い回しが効く。"""
+    ids = [r["id"] for r in rows]
+    have_audio = _materialize_audio(ids)
+    imgs_by_id = get_image_data_batch(ids)
+    deck: list[dict] = []
+    for r in rows:
+        rid = r["id"]
+        words_list = [w.strip() for w in r["words"].split(",") if w.strip()]
+        words_list = _order_words_by_sentence(words_list, r["english"])
+        pron = _parse_word_pronunciations(r["explanation"])
+        syn = _parse_word_synonyms(r["explanation"])
+        mean = _parse_word_meanings(r["explanation"])
+        pos = _parse_word_pos(r["explanation"])
+        words = []
+        for w in words_list:
+            lw = w.lower()
+            words.append({
+                "w": w,
+                "pos": pos.get(lw, ""),
+                "ipa": pron.get(lw, ""),
+                "syn": ", ".join(syn.get(lw, [])),
+                "meaning": _shorten_meaning(mean.get(lw, "")),
+            })
+        imgs: dict[str, list] = {}
+        for lw, lst in (imgs_by_id.get(rid, {}) or {}).items():
+            imgs[lw] = [
+                {"thumb": x.get("thumb", ""), "name": x.get("photographer", ""),
+                 "url": x.get("photographer_url", "#")}
+                for x in (lst or [])
+            ]
+        deck.append({
+            "id": rid,
+            "eng": _highlight_target_words(r["english"], words_list),
+            "jp": _highlight_japanese(r["japanese"]),
+            "vc": r.get("view_count", 0),
+            "audio": f"/app/static/audio/{rid}.mp3" if rid in have_audio else "",
+            "plain": r["english"],
+            "words": words,
+            "imgs": imgs,
+        })
+    return deck
+
+
+_DECK_TEMPLATE = r"""
+<div id="wgapp" style="font-family:-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN',sans-serif;max-width:640px;margin:0 auto;padding:2px;color:#111827;"></div>
+<style>
+  html,body{margin:0;padding:0;}
+  #wgapp *{box-sizing:border-box;}
+  .wg-btn{border:none;border-radius:8px;cursor:pointer;font-weight:700;}
+  .wg-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;margin:6px 0;box-shadow:0 2px 10px rgba(0,0,0,.06);}
+  .wg-judge{display:flex;gap:8px;}
+  .wg-judge button{flex:1;padding:12px 0;font-size:15px;}
+  .wg-ng{background:#fff;color:#374151;border:1px solid #d1d5db !important;}
+  .wg-ok{background:#e8975a;color:#fff;}
+  .wg-reveal{width:100%;padding:11px 0;background:#f3f4f6;color:#374151;font-size:14px;}
+  .wg-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
+  .wg-back{background:none;border:none;color:#6b7280;font-size:13px;cursor:pointer;padding:4px;}
+  .wg-prog{color:#6b7280;font-size:12px;}
+  .wg-audio{display:flex;align-items:center;gap:8px;background:#fff5f5;border:1px solid #ffd5d5;border-radius:10px;padding:6px 10px;}
+  .wg-ac{background:#e8975a;color:#fff;border:none;border-radius:6px;padding:4px 7px;font-size:11px;cursor:pointer;font-weight:700;line-height:1;}
+  .wg-ac.p{padding:9px 18px;font-size:19px;border-radius:8px;}
+  .wg-sk{flex:1;accent-color:#e8975a;height:4px;}
+  .wg-tm{font-size:10px;color:#999;min-width:54px;text-align:right;font-variant-numeric:tabular-nums;}
+  .wg-en{font-size:21px;line-height:1.55;font-weight:500;}
+  .wg-lbl{color:#999;font-size:11px;margin-bottom:4px;}
+  .wg-wrow{margin-bottom:7px;}
+  .wg-whead{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;}
+  .wg-w{font-weight:700;font-size:16px;color:#111827;}
+  .wg-pos{font-size:12px;color:#2563eb;font-weight:600;}
+  .wg-ipa,.wg-syn{font-size:13px;color:#4b5563;}
+  .wg-mean{font-size:13px;color:#374151;line-height:1.4;}
+  .wg-imgword{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;}
+  .wg-imgword button{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:14px;padding:4px 12px;font-size:13px;cursor:pointer;}
+  .wg-imgword button.on{background:#e8975a;color:#fff;border-color:#e8975a;}
+  .wg-car{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;}
+  .wg-car::-webkit-scrollbar{display:none;}
+  .wg-car>div{scroll-snap-align:start;flex:0 0 100%;text-align:center;padding:0 8px;}
+  .wg-car img{width:100%;max-width:360px;height:260px;object-fit:cover;border-radius:8px;}
+  .wg-sec{background:#fff;color:#6b7280;border:1px solid #e5e7eb;border-radius:8px;padding:10px 0;width:100%;font-size:14px;margin-top:10px;cursor:pointer;}
+  .wg-del{background:none;border:none;color:#b91c1c;font-size:12px;cursor:pointer;margin-top:12px;text-decoration:underline;}
+</style>
+<script>
+(function(){
+  const DECK = __DECK__;
+  let i = Math.max(0, Math.min(__START__, DECK.length - 1));
+  let revealed = false, imgWord = null;
+  const root = document.getElementById('wgapp');
+
+  function fit(){try{const h=Math.ceil(document.body.scrollHeight)+10;const fe=window.frameElement;if(fe){fe.style.height=h+'px';if(fe.parentElement)fe.parentElement.style.height=h+'px';}}catch(e){}}
+
+  const PREFERRED=['Ava (Premium)','Samantha (Enhanced)','Samantha','Google US English','Microsoft Aria Online','Premium','Enhanced','Neural'];
+  function pickBest(){const v=window.speechSynthesis.getVoices();const en=v.filter(x=>x.lang&&x.lang.toLowerCase().startsWith('en'));for(const k of PREFERRED){const f=en.find(x=>x.name&&x.name.includes(k));if(f)return f;}return en.find(x=>x.lang==='en-US')||en[0]||v[0];}
+  function speak(t){const u=new SpeechSynthesisUtterance(t);const c=pickBest();if(c){u.voice=c;u.lang=c.lang;}else{u.lang='en-US';}u.rate=.95;window.speechSynthesis.cancel();window.speechSynthesis.speak(u);}
+  try{window.speechSynthesis.getVoices();window.speechSynthesis.onvoiceschanged=()=>window.speechSynthesis.getVoices();}catch(e){}
+
+  function loadJ(){try{return JSON.parse(localStorage.getItem('wg_judgments')||'{}');}catch(e){return {};}}
+  function judge(status){
+    const c=DECK[i];const j=loadJ();const e=j[c.id]||{status:status,inc:0};
+    e.status=status;e.inc=(e.inc||0)+1;j[c.id]=e;
+    localStorage.setItem('wg_judgments',JSON.stringify(j));
+    c.vc=(c.vc||0)+1;
+    if(i>=DECK.length-1){finished();}else{i++;revealed=false;imgWord=null;render();}
+  }
+  function act(type){
+    localStorage.setItem('wg_action',JSON.stringify({type:type,idx:i}));
+    const b=window.parent.document.querySelector('.st-key-wg_trigger button');
+    if(b){b.click();}
+  }
+  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+
+  function finished(){
+    root.innerHTML='<div class="wg-card" style="text-align:center;"><div style="font-size:18px;font-weight:700;margin-bottom:12px;">🎉 このセットの最後でした!</div>'
+      +'<button class="wg-btn wg-ok" id="wgrestart" style="width:100%;padding:12px 0;margin-bottom:8px;">最初から</button>'
+      +'<button class="wg-btn wg-reveal" id="wgback2">← 一覧に戻る</button></div>';
+    document.getElementById('wgrestart').onclick=()=>{i=0;revealed=false;imgWord=null;render();};
+    document.getElementById('wgback2').onclick=()=>act('back');
+    fit();
+  }
+
+  function renderImgs(c){
+    const car=document.getElementById('wgcar');if(!car)return;
+    const imgs=c.imgs[(imgWord||'').toLowerCase()]||[];
+    let h='';
+    for(const im of imgs){h+='<div><img src="'+im.thumb+'"><div style="font-size:10px;color:#999;margin-top:3px;">📷 <a href="'+im.url+'" target="_blank" style="color:#999;">'+esc(im.name)+'</a></div></div>';}
+    car.innerHTML=h||'<div style="color:#999;font-size:12px;padding:8px;">画像なし</div>';
+    car.querySelectorAll('img').forEach(im=>im.onload=fit);
+    fit();
+  }
+
+  function setupAudio(){
+    const a=document.getElementById('wgau'),pp=document.getElementById('wgpp'),sk=document.getElementById('wgsk'),tm=document.getElementById('wgtm');
+    const f=s=>{s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');};
+    function u(){if(a.duration)sk.value=a.currentTime/a.duration*100;tm.textContent=f(a.currentTime)+'/'+f(a.duration||0);}
+    a.addEventListener('timeupdate',u);a.addEventListener('loadedmetadata',u);
+    a.addEventListener('play',()=>pp.textContent='⏸');a.addEventListener('pause',()=>pp.textContent='▶');a.addEventListener('ended',()=>pp.textContent='▶');
+    pp.onclick=()=>{a.paused?a.play():a.pause();};
+    document.getElementById('wgbk').onclick=()=>{a.currentTime=Math.max(0,a.currentTime-3);};
+    document.getElementById('wgfw').onclick=()=>{a.currentTime=Math.min(a.duration||1e9,a.currentTime+3);};
+    sk.oninput=()=>{if(a.duration)a.currentTime=sk.value/100*a.duration;};
+    setTimeout(()=>a.play().catch(()=>{}),120);
+  }
+
+  function render(){
+    const c=DECK[i];
+    let h='';
+    h+='<div class="wg-top"><button class="wg-back" id="wgback">← 一覧に戻る</button>'
+      +'<span class="wg-prog">'+(i+1)+' / '+DECK.length+'　|　閲覧 '+(c.vc||0)+'回</span></div>';
+    h+='<div class="wg-judge"><button class="wg-btn wg-ng" id="wgng">✕ わからない</button>'
+      +'<button class="wg-btn wg-ok" id="wgok">✓ わかる</button></div>';
+    if(c.audio){
+      h+='<div class="wg-audio" style="margin-top:8px;"><audio id="wgau" src="'+c.audio+'" preload="auto"></audio>'
+        +'<button class="wg-ac" id="wgbk">«3</button><button class="wg-ac p" id="wgpp">▶</button><button class="wg-ac" id="wgfw">3»</button>'
+        +'<input id="wgsk" class="wg-sk" type="range" min="0" max="100" value="0" step="0.1">'
+        +'<span class="wg-tm" id="wgtm">0:00/0:00</span></div>';
+    } else {
+      h+='<div style="margin-top:8px;"><button class="wg-btn wg-ok" id="wgtts" style="width:100%;padding:11px 0;">🔊 タップして英文を聞く</button></div>';
+    }
+    h+='<div class="wg-card"><div class="wg-lbl">【英文】</div><div class="wg-en">'+c.eng+'</div></div>';
+    if(!revealed){
+      h+='<button class="wg-btn wg-reveal" id="wgrev">詳細を見る</button>';
+    } else {
+      let wb='';
+      for(const w of c.words){
+        let p='<span class="wg-w">'+esc(w.w)+'</span>';
+        if(w.pos)p+='<span class="wg-pos">【'+esc(w.pos)+'】</span>';
+        if(w.ipa)p+='<span class="wg-ipa">/'+esc(w.ipa)+'/</span>';
+        if(w.syn)p+='<span class="wg-syn">≈ '+esc(w.syn)+'</span>';
+        wb+='<div class="wg-wrow"><div class="wg-whead">'+p+'</div>'+(w.meaning?'<div class="wg-mean">: '+esc(w.meaning)+'</div>':'')+'</div>';
+      }
+      h+='<div class="wg-card"><div class="wg-lbl">単語</div><div style="margin-bottom:10px;">'+wb+'</div>'
+        +'<div class="wg-lbl">和訳</div><div style="font-size:14px;line-height:1.5;">'+c.jp+'</div></div>';
+      const iws=c.words.map(w=>w.w).filter(w=>(c.imgs[w.toLowerCase()]||[]).length);
+      if(iws.length){
+        if(!imgWord||!iws.includes(imgWord))imgWord=iws[0];
+        h+='<div class="wg-lbl" style="margin-top:8px;">🖼️ 単語のイメージ</div><div class="wg-imgword" id="wgiw">';
+        for(const w of iws)h+='<button data-w="'+esc(w)+'" class="'+(w===imgWord?'on':'')+'">'+esc(w)+'</button>';
+        h+='</div><div class="wg-car" id="wgcar"></div>';
+      }
+      h+='<button class="wg-sec" id="wgregen">🔄 別の例文で作り直す</button>';
+      h+='<div style="text-align:center;"><button class="wg-del" id="wgdel">このカードを削除</button></div>';
+    }
+    root.innerHTML=h;
+
+    document.getElementById('wgback').onclick=()=>act('back');
+    document.getElementById('wgng').onclick=()=>judge('review');
+    document.getElementById('wgok').onclick=()=>judge('mastered');
+    if(c.audio){setupAudio();}else{const t=document.getElementById('wgtts');if(t)t.onclick=()=>speak(c.plain);}
+    if(!revealed){document.getElementById('wgrev').onclick=()=>{revealed=true;render();};}
+    else{
+      const rg=document.getElementById('wgregen');if(rg)rg.onclick=()=>act('regen');
+      const dl=document.getElementById('wgdel');if(dl)dl.onclick=()=>{if(confirm('このカードを削除しますか?'))act('delete');};
+      const iw=document.getElementById('wgiw');
+      if(iw){iw.querySelectorAll('button').forEach(b=>b.onclick=()=>{imgWord=b.getAttribute('data-w');iw.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderImgs(c);});renderImgs(c);}
+    }
+    fit();
+  }
+
+  render();
+})();
+</script>
+"""
+
+
+def _render_deck(rows: list[dict], start: int) -> None:
+    deck = _build_deck(rows)
+    payload = json.dumps(deck, ensure_ascii=False).replace("</", "<\\/")
+    html_str = _DECK_TEMPLATE.replace("__DECK__", payload).replace("__START__", str(int(start)))
+    st_html(html_str, height=480, scrolling=True)
+
+
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
 
 
 # ── タブ: 学習(カード一覧・復習) ───────────────────────────────────────────
 if _active_tab == "学習":
+    # ── 学習デッキ(JS)からの回収口 ──────────────────────────────────────
+    # めくり/わかる/わからない はiframe内のJSで完結しサーバーへ来ない。判定は
+    # localStorage['wg_judgments'] に溜まり、戻る/作り直す/削除 を押した時だけ
+    # 隠しボタン wg_trigger が押されてここへ来る。その節目でまとめてDBへ反映する。
+    st.markdown("<style>div.st-key-wg_trigger{display:none;}</style>", unsafe_allow_html=True)
+    _woke = st.button("t", key="wg_trigger")  # JSから.click()される隠しトリガ
+    if _woke:
+        # js_eval を再読込させるため key を変える(同じkeyだと前回値がキャッシュされる)
+        st.session_state.wg_nonce = st.session_state.get("wg_nonce", 0) + 1
+    _nonce = st.session_state.get("wg_nonce", 0)
+    if streamlit_js_eval is not None:
+        _raw_j = streamlit_js_eval(
+            js_expressions="localStorage.getItem('wg_judgments')||''",
+            key=f"wg_jud_{_nonce}", want_output=True,
+        )
+        _raw_a = streamlit_js_eval(
+            js_expressions="localStorage.getItem('wg_action')||''",
+            key=f"wg_act_{_nonce}", want_output=True,
+        )
+        _did = False
+        if _raw_j:
+            try:
+                _jmap = json.loads(_raw_j)
+            except Exception:
+                _jmap = {}
+            _items = [
+                (int(k), v.get("status", "review"), int(v.get("inc", 1)))
+                for k, v in _jmap.items()
+            ]
+            if _items:
+                mark_judgments_batch(_items)
+                _did = True
+        _action = None
+        if _raw_a:
+            try:
+                _action = json.loads(_raw_a)
+            except Exception:
+                _action = None
+        if _action:
+            _did = True
+            _atype = _action.get("type")
+            _aidx = int(_action.get("idx", 0))
+            _cm = st.session_state.get("card_mode_rows")
+            if _atype == "delete" and _cm and 0 <= _aidx < len(_cm):
+                delete_sentence(_cm[_aidx]["id"])
+                st.session_state.pop("card_mode_rows", None)
+                st.session_state.pop("card_index", None)
+            elif _atype == "regen" and _cm and 0 <= _aidx < len(_cm):
+                st.session_state["pending_regen_idx"] = _aidx
+            else:  # back(または不正) → 一覧へ
+                st.session_state.pop("card_mode_rows", None)
+                st.session_state.pop("card_index", None)
+        if _did:
+            st.session_state.wg_nonce = _nonce + 1  # 次回は空読みになるよう進める
+            streamlit_js_eval(
+                js_expressions="localStorage.removeItem('wg_judgments');localStorage.removeItem('wg_action');",
+                key=f"wg_clr_{_nonce}",
+            )
+            if not (_action and _action.get("type") == "regen"):
+                st.rerun()
+    elif _woke:
+        # streamlit-js-eval が無い環境への保険。localStorageは読めないので
+        # 判定/作り直しは反映できないが、最低限デッキから抜けられるようにする。
+        st.session_state.pop("card_mode_rows", None)
+        st.session_state.pop("card_index", None)
+        st.rerun()
+
     # カード学習中はフィルタ/検索を隠す(邪魔なので)。一覧の時だけ表示する。
     in_card_mode = st.session_state.get("card_mode_rows") is not None
     if in_card_mode:
@@ -981,213 +1303,35 @@ if _active_tab == "学習":
         st.info("該当するカードがありません。" if (search_query or filter_choice != "all") else "まだカードがありません。")
         st.session_state.pop("card_mode_rows", None)
     elif st.session_state.get("card_mode_rows") is not None:
-        # ── フラッシュカードモード ──
-        # 学習画面まるごとを fragment 化し、めくり等の操作ではこの中だけ再実行する
-        # (scope="fragment")。学習タブ全体(フィルタ/DB読み込み)を再実行しないので、
-        # カード送りが軽くなる。fragmentは入れ子不可のため、以前の「詳細を見る」
-        # fragmentもここへ統合した。一覧に戻る/削除だけはアプリ全体を再実行する。
-        @st.fragment
-        def _flashcard_fragment():
-            card_rows = st.session_state.card_mode_rows
-            idx = max(0, min(st.session_state.get("card_index", 0), len(card_rows) - 1))
-            row = card_rows[idx]
-
-            # カード変更時は詳細表示をリセット + 音声自動再生フラグを立てる
-            # (閲覧回数は「わかる/わからない」を押した時にカウントする)
-            if st.session_state.get("last_viewed_card_id") != row["id"]:
-                st.session_state.last_viewed_card_id = row["id"]
-                st.session_state.card_revealed = False
-                st.session_state.autoplay_pending = True
-
-            col_back, col_count = st.columns([1, 2])
-            with col_back:
-                if st.button("← 一覧に戻る", key="back_to_list"):
-                    st.session_state.pop("card_mode_rows", None)
-                    st.session_state.pop("card_index", None)
-                    st.session_state.pop("last_viewed_card_id", None)
-                    st.rerun()  # 一覧へ戻るのでアプリ全体を再実行
-            with col_count:
-                st.markdown(
-                    f"<div style='text-align:right; padding-top:8px; color:#666;'>"
-                    f"{idx + 1} / {len(card_rows)}　|　閲覧 {row.get('view_count', 0)}回"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-            # ── わからない / わかる ボタン(カード上部に固定。スクロールせず押せる) ──
-            # ボタンのCSSはトップ(カード入場時の全体再実行)で一度だけ注入済み。
-            # ここで毎フリップ注入しないことで fragment 再実行を軽くする。
-            is_last = idx == len(card_rows) - 1
-            with st.container(key="judge_buttons"):
-                col_ng, col_ok = st.columns(2)
-                with col_ng:
-                    if st.button("✕ わからない", key="mark_review", type="secondary", use_container_width=True):
-                        mark_status_and_view(row["id"], "review")
-                        row["view_count"] = row.get("view_count", 0) + 1
-                        if is_last:
-                            st.session_state.card_finished = True
-                        else:
-                            st.session_state.card_index = idx + 1
-                        st.rerun(scope="fragment")
-                with col_ok:
-                    if st.button("✓ わかる", key="mark_mastered", type="primary", use_container_width=True):
-                        mark_status_and_view(row["id"], "mastered")
-                        row["view_count"] = row.get("view_count", 0) + 1
-                        if is_last:
-                            st.session_state.card_finished = True
-                        else:
-                            st.session_state.card_index = idx + 1
-                        st.rerun(scope="fragment")
-
-            if st.session_state.get("card_finished"):
-                st.success("🎉 このセットの最後のカードでした!")
-                if st.button("最初から", key="restart_deck", use_container_width=True):
-                    st.session_state.card_index = 0
-                    st.session_state.card_finished = False
-                    st.session_state.pop("last_viewed_card_id", None)
-                    st.rerun(scope="fragment")
-
-            words_list = [w.strip() for w in row["words"].split(",") if w.strip()]
-            words_list = _order_words_by_sentence(words_list, row["english"])
-            highlighted_english = _highlight_target_words(row["english"], words_list)
-
-            # ── 音声プレイヤー ──
-            should_autoplay = st.session_state.pop("autoplay_pending", False)
-            try:
-                audio_bytes = get_or_generate_audio(row["id"], row["english"])
-                _audio_player(audio_bytes, auto_play=should_autoplay)
-            except Exception as e:
-                st.warning(f"OpenAI TTS失敗、ブラウザTTSにフォールバック: {e}")
-                _speak_button(row["english"], auto_play=should_autoplay)
-
-            # ── 英文カード(常時表示) ──
-            st.markdown(
-                f"""
-                <div style='
-                    background: #fff; border: 1px solid #e5e7eb;
-                    border-radius: 12px; padding: 14px 16px; margin: 6px 0;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-                '>
-                  <div style='color:#999; font-size:11px; margin-bottom:4px;'>【英文】</div>
-                  <div style='font-size:21px; line-height:1.55; font-weight:500;'>{highlighted_english}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # ── 詳細(裏面) ──
-            if not st.session_state.get("card_revealed", False):
-                if st.button("詳細を見る", key="reveal_card", use_container_width=True):
-                    st.session_state.card_revealed = True
-                    st.rerun(scope="fragment")
-            else:
-                pronunciations = _parse_word_pronunciations(row["explanation"])
-                synonyms = _parse_word_synonyms(row["explanation"])
-                meanings = _parse_word_meanings(row["explanation"])
-                pos_map = _parse_word_pos(row["explanation"])
-
-                words_block_html = ""
-                for w in words_list:
-                    ipa = pronunciations.get(w.lower(), "")
-                    syns = synonyms.get(w.lower(), [])
-                    meaning = _shorten_meaning(meanings.get(w.lower(), ""))
-                    pos = pos_map.get(w.lower(), "")
-                    inline_parts = [
-                        f"<span style='font-weight:700; font-size:16px; color:#111827;'>{html.escape(w)}</span>"
-                    ]
-                    if pos:
-                        inline_parts.append(
-                            f"<span style='font-size:12px; color:#2563eb; font-weight:600;'>【{html.escape(pos)}】</span>"
-                        )
-                    if ipa:
-                        inline_parts.append(
-                            f"<span style='font-size:13px; color:#4b5563;'>/{html.escape(ipa)}/</span>"
-                        )
-                    if syns:
-                        inline_parts.append(
-                            f"<span style='font-size:13px; color:#4b5563;'>≈ {html.escape(', '.join(syns))}</span>"
-                        )
-                    meaning_html = (
-                        f"<div style='font-size:13px; color:#374151; line-height:1.4; margin-top:0;'>"
-                        f": {html.escape(meaning)}</div>"
-                        if meaning
-                        else ""
+        # ── フラッシュカードモード(クライアントサイド) ──
+        # デッキ全体を1つのiframeに渡し、めくり/詳細/音声/画像/わかる・わからないを
+        # すべてJSで完結させる。サーバー往復が無いのでカード送りはほぼ瞬時。
+        # 「作り直す」だけはAnthropic呼び出しが要るのでPython側で処理してから再描画する。
+        _regen_idx = st.session_state.pop("pending_regen_idx", None)
+        if _regen_idx is not None:
+            _cm = st.session_state.card_mode_rows
+            if 0 <= _regen_idx < len(_cm):
+                _r = _cm[_regen_idx]
+                with st.spinner("新しい例文を生成中..."):
+                    try:
+                        _regen = generate_sentence(_r["words"].split(","))
+                    except Exception as e:
+                        _regen = {}
+                        st.error(f"生成エラー: {e}")
+                if _regen.get("english"):
+                    update_sentence_content(
+                        _r["id"], _regen["english"], _regen["japanese"], _regen["explanation"]
                     )
-                    words_block_html += (
-                        f"<div style='margin-bottom:7px;'>"
-                        f"<div style='display:flex; flex-wrap:wrap; align-items:baseline; gap:10px;'>"
-                        f"{''.join(inline_parts)}"
-                        f"</div>"
-                        f"{meaning_html}"
-                        f"</div>"
-                    )
+                    _r["english"] = _regen["english"]
+                    _r["japanese"] = _regen["japanese"]
+                    _r["explanation"] = _regen["explanation"]
+                    _cm[_regen_idx] = _r
+                st.session_state.card_index = _regen_idx
 
-                st.markdown(
-                    f"""
-                    <div style='
-                        background: #fff; border: 1px solid #e5e7eb;
-                        border-radius: 10px; padding: 14px 16px; margin: 8px 0;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-                    '>
-                      <div style='color:#999; font-size:11px; margin-bottom:2px;'>単語</div>
-                      <div style='margin-bottom:10px;'>{words_block_html}</div>
-                      <div style='color:#999; font-size:11px; margin-bottom:2px;'>和訳</div>
-                      <div style='font-size:14px; line-height:1.5;'>{_highlight_japanese(row["japanese"])}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                if words_list and os.getenv("UNSPLASH_ACCESS_KEY"):
-                    st.markdown(
-                        "<div style='color:#999; font-size:11px; margin-top:8px; margin-bottom:4px;'>🖼️ 単語のイメージ</div>",
-                        unsafe_allow_html=True,
-                    )
-                    selected_word = st.radio(
-                        "単語",
-                        words_list,
-                        horizontal=True,
-                        key=f"img_word_{row['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if selected_word:
-                        images = get_or_fetch_images(row["id"], selected_word)
-                        if not images:
-                            st.caption("画像が見つかりませんでした。")
-                        else:
-                            _image_carousel(images)
-
-                # ── 別の例文で作り直す(同じ単語で再生成。閲覧回数・ステータスは保持) ──
-                st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
-                if st.button("🔄 別の例文で作り直す", key=f"regen_{row['id']}", type="secondary"):
-                    with st.spinner("新しい例文を生成中..."):
-                        try:
-                            regen = generate_sentence(row["words"].split(","))
-                        except Exception as e:
-                            st.error(f"生成エラー: {e}")
-                        else:
-                            if regen.get("english"):
-                                update_sentence_content(
-                                    row["id"], regen["english"], regen["japanese"], regen["explanation"]
-                                )
-                                row["english"] = regen["english"]
-                                row["japanese"] = regen["japanese"]
-                                row["explanation"] = regen["explanation"]
-                                st.session_state.card_mode_rows[idx] = row
-                                st.session_state.card_revealed = False
-                                st.session_state.autoplay_pending = True
-                                st.rerun(scope="fragment")
-                            else:
-                                st.error("生成結果が空でした。もう一度お試しください。")
-
-            with st.expander("⚙️ このカードを削除"):
-                if st.button("削除する", key=f"delete_card_{row['id']}", type="secondary"):
-                    delete_sentence(row["id"])
-                    st.session_state.pop("card_mode_rows", None)
-                    st.session_state.pop("card_index", None)
-                    st.rerun()  # 一覧へ戻るのでアプリ全体を再実行
-
-        _flashcard_fragment()
+        _render_deck(
+            st.session_state.card_mode_rows,
+            st.session_state.get("card_index", 0),
+        )
 
     else:
         # ── 単語リスト表示 ──
