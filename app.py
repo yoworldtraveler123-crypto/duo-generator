@@ -458,6 +458,8 @@ if _active_tab == "生成":
                         st.info(result["explanation"])
 
                     new_id = save_sentence(words, result["english"], result["japanese"], result["explanation"])
+                    st.session_state.deck_payload = None  # 学習タブのデッキを作り直す
+                    st.session_state.deck_init = {"screen": "list"}
 
                     # 先回り生成: 音声 + 各単語の画像をDBに保存しておく(カード遷移を高速化)
                     with st.spinner("音声・画像を準備中..."):
@@ -555,6 +557,9 @@ if _active_tab == "一括取込":
             time.sleep(0.4)  # レート制限回避のため少し間隔を空ける
         status.empty()
         prog.empty()
+        if ok:
+            st.session_state.deck_payload = None  # 学習タブのデッキを作り直す
+            st.session_state.deck_init = {"screen": "list"}
         msg = f"完了: {ok} 文を保存しました。"
         if ng:
             msg += f" 生成できなかったのが {ng} 文あります。"
@@ -619,6 +624,8 @@ if _active_tab == "一括取込":
             if ok > 0:
                 for oid in _old_ids:
                     delete_sentence(oid)
+                st.session_state.deck_payload = None  # 学習タブのデッキを作り直す
+                st.session_state.deck_init = {"screen": "list"}
                 msg = f"完了: {ok} 文に作り直し、旧 {len(_old_ids)} カードを削除しました。"
                 if failed_words:
                     msg += f" 生成できなかった単語(必要なら再取込): {', '.join(failed_words)}"
@@ -1029,6 +1036,8 @@ def _build_deck(rows: list[dict], start: int = 0) -> list[dict]:
             "eng": _highlight_target_words(r["english"], words_list),
             "jp": _highlight_japanese(r["japanese"]),
             "vc": r.get("view_count", 0),
+            "status": r.get("status", "new"),
+            "wstr": r["words"],  # 検索用の素の単語文字列
             "audio": f"/app/static/audio/{rid}.mp3" if rid in audio_ids else "",
             "plain": r["english"],
             "words": words,
@@ -1037,7 +1046,12 @@ def _build_deck(rows: list[dict], start: int = 0) -> list[dict]:
     return deck
 
 
-_DECK_TEMPLATE = r"""
+# ── 学習タブ全体(一覧+カード)をクライアントサイド化 ────────────────────────
+# 一覧⇄カードの切替・フィルタ・検索・めくり・詳細・音声・画像を、すべて1つの
+# iframe内のJSで完結させる。サーバー往復が発生するのは「初回ロード・判定の保存・
+# 削除・作り直し」だけ。判定はlocalStorageに溜め、隠しボタン wg_trigger 経由で
+# Python側が回収する。カード枚数が数十程度なので全データをクライアントに載せても軽い。
+_STUDY_TEMPLATE = r"""
 <div id="wgapp" style="font-family:-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN',sans-serif;max-width:640px;margin:0 auto;padding:2px;color:#111827;"></div>
 <style>
   html,body{margin:0;padding:0;}
@@ -1074,15 +1088,33 @@ _DECK_TEMPLATE = r"""
   .wg-car img{width:100%;max-width:360px;height:260px;object-fit:cover;border-radius:8px;}
   .wg-sec{background:#fff;color:#6b7280;border:1px solid #e5e7eb;border-radius:8px;padding:10px 0;width:100%;font-size:14px;margin-top:10px;cursor:pointer;}
   .wg-del{background:none;border:none;color:#b91c1c;font-size:12px;cursor:pointer;margin-top:12px;text-decoration:underline;}
+  .wg-chips{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px;}
+  .wg-chip{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:16px;padding:6px 12px;font-size:13px;cursor:pointer;}
+  .wg-chip.on{background:#e8975a;color:#fff;border-color:#e8975a;}
+  .wg-search{width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;margin-bottom:6px;}
+  .wg-cap{color:#6b7280;font-size:12px;margin:4px 0 8px;}
+  .wg-editbar{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#374151;margin-bottom:6px;}
+  .wg-delsel{background:#fff;border:1px solid #d1d5db;color:#b91c1c;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;font-weight:700;}
+  .wg-row{display:block;width:100%;text-align:left;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:11px 14px;margin-bottom:6px;font-size:14px;cursor:pointer;color:#111827;}
+  .wg-rowbtn:hover{background:#fafafa;}
+  .wg-empty{color:#6b7280;font-size:14px;padding:16px 4px;text-align:center;}
 </style>
 <script>
 (function(){
   const DECK = __DECK__;
-  let i = Math.max(0, Math.min(__START__, DECK.length - 1));
-  let revealed = false, imgWord = null;
-  const root = document.getElementById('wgapp');
+  const INIT = __INIT__;
+  const byId={}; DECK.forEach(c=>byId[c.id]=c);
+  const live={};                 // id -> {status, vc} 今セッションの上書き
+  const S=id=>(live[id]&&live[id].status)||byId[id].status;
+  const V=id=>(live[id]&&live[id].vc!=null)?live[id].vc:(byId[id].vc||0);
+
+  let screen='list', filter='all', search='', edit=false;
+  let playlist=[], idx=0, revealed=false, imgWord=null;
+  const sel=new Set();
+  const root=document.getElementById('wgapp');
 
   function fit(){try{const h=Math.ceil(document.body.scrollHeight)+10;const fe=window.frameElement;if(fe){fe.style.height=h+'px';if(fe.parentElement)fe.parentElement.style.height=h+'px';}}catch(e){}}
+  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
 
   const PREFERRED=['Ava (Premium)','Samantha (Enhanced)','Samantha','Google US English','Microsoft Aria Online','Premium','Enhanced','Neural'];
   function pickBest(){const v=window.speechSynthesis.getVoices();const en=v.filter(x=>x.lang&&x.lang.toLowerCase().startsWith('en'));for(const k of PREFERRED){const f=en.find(x=>x.name&&x.name.includes(k));if(f)return f;}return en.find(x=>x.lang==='en-US')||en[0]||v[0];}
@@ -1090,72 +1122,111 @@ _DECK_TEMPLATE = r"""
   try{window.speechSynthesis.getVoices();window.speechSynthesis.onvoiceschanged=()=>window.speechSynthesis.getVoices();}catch(e){}
 
   function loadJ(){try{return JSON.parse(localStorage.getItem('wg_judgments')||'{}');}catch(e){return {};}}
-  function judge(status){
-    const c=DECK[i];const j=loadJ();const e=j[c.id]||{status:status,inc:0};
-    e.status=status;e.inc=(e.inc||0)+1;j[c.id]=e;
-    localStorage.setItem('wg_judgments',JSON.stringify(j));
-    c.vc=(c.vc||0)+1;
-    if(i>=DECK.length-1){finished();}else{i++;revealed=false;imgWord=null;render();}
-  }
-  function act(type){
-    localStorage.setItem('wg_action',JSON.stringify({type:type,idx:i}));
-    const b=window.parent.document.querySelector('.st-key-wg_trigger button');
-    if(b){b.click();}
-  }
-  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+  function fireTrigger(){const b=window.parent.document.querySelector('.st-key-wg_trigger button');if(b)b.click();}
+  function act(type,data){localStorage.setItem('wg_action',JSON.stringify(Object.assign({type:type},data||{})));fireTrigger();}
+  function flush(){if(localStorage.getItem('wg_judgments'))act('flush');}  // 判定をバックグラウンドで保存(UIは止めない)
 
+  // ── フィルタ/検索 ──
+  function filtered(){
+    const q=search.trim().toLowerCase();
+    return DECK.filter(c=>{
+      if(filter!=='all'&&S(c.id)!==filter)return false;
+      if(q){const hay=((c.wstr||'')+' '+(c.plain||'')+' '+(c.jp||'')).toLowerCase();if(hay.indexOf(q)<0)return false;}
+      return true;
+    });
+  }
+
+  // ── カード判定/移動 ──
+  function judge(status){
+    const c=playlist[idx];const j=loadJ();const e=j[c.id]||{status:status,inc:0};e.status=status;e.inc=(e.inc||0)+1;j[c.id]=e;
+    localStorage.setItem('wg_judgments',JSON.stringify(j));
+    live[c.id]={status:status,vc:V(c.id)+1};
+    if(idx>=playlist.length-1){finished();}else{idx++;revealed=false;imgWord=null;renderCard();}
+  }
+  function toList(){screen='list';flush();renderList();}
+  function openCard(id){playlist=filtered();idx=Math.max(0,playlist.findIndex(c=>c.id===id));screen='card';revealed=false;imgWord=null;renderCard();}
+
+  // ── 一覧画面 ──
+  function renderList(){
+    let h='<div class="wg-chips" id="wgchips">';
+    [['all','全て'],['new','🆕 新規'],['review','🔁 復習する'],['mastered','✅ 習得済み']].forEach(p=>{h+='<button data-f="'+p[0]+'" class="wg-chip'+(filter===p[0]?' on':'')+'">'+p[1]+'</button>';});
+    h+='</div>';
+    h+='<input id="wgsearch" class="wg-search" placeholder="🔎 単語・例文で検索" value="'+esc(search)+'">';
+    h+='<div class="wg-cap" id="wgcap"></div>';
+    h+='<div class="wg-editbar"><label><input type="checkbox" id="wgedit"'+(edit?' checked':'')+'> 選択して削除</label><span id="wgdelwrap"></span></div>';
+    h+='<div id="wgrows"></div>';
+    root.innerHTML=h;
+    document.getElementById('wgsearch').oninput=function(){search=this.value;renderRows();};
+    document.getElementById('wgedit').onchange=function(){edit=this.checked;sel.clear();renderList();};
+    root.querySelectorAll('.wg-chip').forEach(b=>b.onclick=()=>{filter=b.getAttribute('data-f');root.querySelectorAll('.wg-chip').forEach(x=>x.classList.toggle('on',x===b));renderRows();});
+    renderRows();
+  }
+  function renderRows(){
+    const list=filtered();
+    const vcs=list.map(c=>V(c.id));const lap=vcs.length?Math.min.apply(null,vcs):0;const mx=vcs.length?Math.max.apply(null,vcs):0;
+    const cap=document.getElementById('wgcap');if(cap)cap.innerHTML='📊 '+list.length+'件 / 周回(最小閲覧): <b>'+lap+'</b>　|　最大 '+mx+'回';
+    const dw=document.getElementById('wgdelwrap');
+    if(dw)dw.innerHTML=edit?'<button class="wg-delsel" id="wgdelsel">🗑 選択('+sel.size+')を削除</button>':'';
+    const ds=document.getElementById('wgdelsel');
+    if(ds)ds.onclick=()=>{if(sel.size&&confirm(sel.size+'件を削除しますか?'))act('delete',{ids:Array.from(sel)});};
+    const rows=document.getElementById('wgrows');
+    if(!list.length){rows.innerHTML='<div class="wg-empty">該当するカードがありません。</div>';fit();return;}
+    const ic={'new':'🆕','review':'🔁','mastered':'✅'};
+    let h='';
+    for(const c of list){
+      const icon=ic[S(c.id)]||'🆕';const w=esc(c.words.map(x=>x.w).join(' / '));
+      if(edit){h+='<label class="wg-row"><input type="checkbox" data-id="'+c.id+'"'+(sel.has(c.id)?' checked':'')+'> '+icon+'  '+w+'　('+V(c.id)+'回)</label>';}
+      else{h+='<button class="wg-row wg-rowbtn" data-id="'+c.id+'">'+icon+'  '+w+'　('+V(c.id)+'回)</button>';}
+    }
+    rows.innerHTML=h;
+    if(edit){rows.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.onchange=function(){const id=+this.getAttribute('data-id');if(this.checked)sel.add(id);else sel.delete(id);renderRows();});}
+    else{rows.querySelectorAll('.wg-rowbtn').forEach(b=>b.onclick=()=>openCard(+b.getAttribute('data-id')));}
+    fit();
+  }
+
+  // ── カード画面 ──
   function finished(){
     root.innerHTML='<div class="wg-card" style="text-align:center;"><div style="font-size:18px;font-weight:700;margin-bottom:12px;">🎉 このセットの最後でした!</div>'
       +'<button class="wg-btn wg-ok" id="wgrestart" style="width:100%;padding:12px 0;margin-bottom:8px;">最初から</button>'
       +'<button class="wg-btn wg-reveal" id="wgback2">← 一覧に戻る</button></div>';
-    document.getElementById('wgrestart').onclick=()=>{i=0;revealed=false;imgWord=null;render();};
-    document.getElementById('wgback2').onclick=()=>act('back');
-    fit();
+    document.getElementById('wgrestart').onclick=()=>{idx=0;revealed=false;imgWord=null;renderCard();};
+    document.getElementById('wgback2').onclick=toList;
+    flush();fit();
   }
-
   function renderImgs(c){
     const car=document.getElementById('wgcar');if(!car)return;
-    const imgs=c.imgs[(imgWord||'').toLowerCase()]||[];
-    let h='';
+    const imgs=c.imgs[(imgWord||'').toLowerCase()]||[];let h='';
     for(const im of imgs){h+='<div><img src="'+im.thumb+'"><div style="font-size:10px;color:#999;margin-top:3px;">📷 <a href="'+im.url+'" target="_blank" style="color:#999;">'+esc(im.name)+'</a></div></div>';}
     car.innerHTML=h||'<div style="color:#999;font-size:12px;padding:8px;">画像なし</div>';
-    car.querySelectorAll('img').forEach(im=>im.onload=fit);
-    fit();
+    car.querySelectorAll('img').forEach(im=>im.onload=fit);fit();
   }
-
-  function setupAudio(){
+  function setupAudio(c){
     const a=document.getElementById('wgau'),pp=document.getElementById('wgpp'),sk=document.getElementById('wgsk'),tm=document.getElementById('wgtm');
     const f=s=>{s=Math.max(0,s|0);return (s/60|0)+':'+String(s%60).padStart(2,'0');};
     function u(){if(a.duration)sk.value=a.currentTime/a.duration*100;tm.textContent=f(a.currentTime)+'/'+f(a.duration||0);}
     a.addEventListener('timeupdate',u);a.addEventListener('loadedmetadata',u);
     a.addEventListener('play',()=>pp.textContent='⏸');a.addEventListener('pause',()=>pp.textContent='▶');a.addEventListener('ended',()=>pp.textContent='▶');
-    a.addEventListener('error',()=>{try{speak(DECK[i].plain);}catch(e){}});
+    a.addEventListener('error',()=>{try{speak(c.plain);}catch(e){}});
     pp.onclick=()=>{a.paused?a.play():a.pause();};
     document.getElementById('wgbk').onclick=()=>{a.currentTime=Math.max(0,a.currentTime-3);};
     document.getElementById('wgfw').onclick=()=>{a.currentTime=Math.min(a.duration||1e9,a.currentTime+3);};
     sk.oninput=()=>{if(a.duration)a.currentTime=sk.value/100*a.duration;};
     setTimeout(()=>a.play().catch(()=>{}),120);
   }
-
-  function render(){
-    const c=DECK[i];
+  function renderCard(){
+    const c=playlist[idx];if(!c){toList();return;}
     let h='';
     h+='<div class="wg-top"><button class="wg-back" id="wgback">← 一覧に戻る</button>'
-      +'<span class="wg-prog">'+(i+1)+' / '+DECK.length+'　|　閲覧 '+(c.vc||0)+'回</span></div>';
-    h+='<div class="wg-judge"><button class="wg-btn wg-ng" id="wgng">✕ わからない</button>'
-      +'<button class="wg-btn wg-ok" id="wgok">✓ わかる</button></div>';
+      +'<span class="wg-prog">'+(idx+1)+' / '+playlist.length+'　|　閲覧 '+V(c.id)+'回</span></div>';
+    h+='<div class="wg-judge"><button class="wg-btn wg-ng" id="wgng">✕ わからない</button><button class="wg-btn wg-ok" id="wgok">✓ わかる</button></div>';
     if(c.audio){
       h+='<div class="wg-audio" style="margin-top:8px;"><audio id="wgau" src="'+c.audio+'" preload="auto"></audio>'
         +'<button class="wg-ac" id="wgbk">«3</button><button class="wg-ac p" id="wgpp">▶</button><button class="wg-ac" id="wgfw">3»</button>'
-        +'<input id="wgsk" class="wg-sk" type="range" min="0" max="100" value="0" step="0.1">'
-        +'<span class="wg-tm" id="wgtm">0:00/0:00</span></div>';
-    } else {
-      h+='<div style="margin-top:8px;"><button class="wg-btn wg-ok" id="wgtts" style="width:100%;padding:11px 0;">🔊 タップして英文を聞く</button></div>';
-    }
+        +'<input id="wgsk" class="wg-sk" type="range" min="0" max="100" value="0" step="0.1"><span class="wg-tm" id="wgtm">0:00/0:00</span></div>';
+    }else{h+='<div style="margin-top:8px;"><button class="wg-btn wg-ok" id="wgtts" style="width:100%;padding:11px 0;">🔊 タップして英文を聞く</button></div>';}
     h+='<div class="wg-card"><div class="wg-lbl">【英文】</div><div class="wg-en">'+c.eng+'</div></div>';
-    if(!revealed){
-      h+='<button class="wg-btn wg-reveal" id="wgrev">詳細を見る</button>';
-    } else {
+    if(!revealed){h+='<button class="wg-btn wg-reveal" id="wgrev">詳細を見る</button>';}
+    else{
       let wb='';
       for(const w of c.words){
         let p='<span class="wg-w">'+esc(w.w)+'</span>';
@@ -1164,11 +1235,10 @@ _DECK_TEMPLATE = r"""
         if(w.syn)p+='<span class="wg-syn">≈ '+esc(w.syn)+'</span>';
         wb+='<div class="wg-wrow"><div class="wg-whead">'+p+'</div>'+(w.meaning?'<div class="wg-mean">: '+esc(w.meaning)+'</div>':'')+'</div>';
       }
-      h+='<div class="wg-card"><div class="wg-lbl">単語</div><div style="margin-bottom:10px;">'+wb+'</div>'
-        +'<div class="wg-lbl">和訳</div><div style="font-size:14px;line-height:1.5;">'+c.jp+'</div></div>';
+      h+='<div class="wg-card"><div class="wg-lbl">単語</div><div style="margin-bottom:10px;">'+wb+'</div><div class="wg-lbl">和訳</div><div style="font-size:14px;line-height:1.5;">'+c.jp+'</div></div>';
       const iws=c.words.map(w=>w.w).filter(w=>(c.imgs[w.toLowerCase()]||[]).length);
       if(iws.length){
-        if(!imgWord||!iws.includes(imgWord))imgWord=iws[0];
+        if(!imgWord||iws.indexOf(imgWord)<0)imgWord=iws[0];
         h+='<div class="wg-lbl" style="margin-top:8px;">🖼️ 単語のイメージ</div><div class="wg-imgword" id="wgiw">';
         for(const w of iws)h+='<button data-w="'+esc(w)+'" class="'+(w===imgWord?'on':'')+'">'+esc(w)+'</button>';
         h+='</div><div class="wg-car" id="wgcar"></div>';
@@ -1177,32 +1247,34 @@ _DECK_TEMPLATE = r"""
       h+='<div style="text-align:center;"><button class="wg-del" id="wgdel">このカードを削除</button></div>';
     }
     root.innerHTML=h;
-
-    document.getElementById('wgback').onclick=()=>act('back');
+    document.getElementById('wgback').onclick=toList;
     document.getElementById('wgng').onclick=()=>judge('review');
     document.getElementById('wgok').onclick=()=>judge('mastered');
-    if(c.audio){setupAudio();}else{const t=document.getElementById('wgtts');if(t)t.onclick=()=>speak(c.plain);}
-    if(!revealed){document.getElementById('wgrev').onclick=()=>{revealed=true;render();};}
+    if(c.audio){setupAudio(c);}else{const t=document.getElementById('wgtts');if(t)t.onclick=()=>speak(c.plain);}
+    if(!revealed){document.getElementById('wgrev').onclick=()=>{revealed=true;renderCard();};}
     else{
-      const rg=document.getElementById('wgregen');if(rg)rg.onclick=()=>act('regen');
-      const dl=document.getElementById('wgdel');if(dl)dl.onclick=()=>{if(confirm('このカードを削除しますか?'))act('delete');};
+      const rg=document.getElementById('wgregen');if(rg)rg.onclick=()=>act('regen',{id:c.id});
+      const dl=document.getElementById('wgdel');if(dl)dl.onclick=()=>{if(confirm('このカードを削除しますか?'))act('delete',{ids:[c.id]});};
       const iw=document.getElementById('wgiw');
       if(iw){iw.querySelectorAll('button').forEach(b=>b.onclick=()=>{imgWord=b.getAttribute('data-w');iw.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderImgs(c);});renderImgs(c);}
     }
     fit();
   }
 
-  render();
+  // ── 起動: INITで初期画面を決める(作り直し後はそのカードを開く) ──
+  if(INIT&&INIT.screen==='card'&&byId[INIT.id]){openCard(INIT.id);if(INIT.revealed){revealed=true;renderCard();}}
+  else{renderList();}
 })();
 </script>
 """
 
 
-def _render_deck(rows: list[dict], start: int) -> None:
-    deck = _build_deck(rows, start)
+def _render_study(deck: list[dict], init: dict) -> None:
     payload = json.dumps(deck, ensure_ascii=False).replace("</", "<\\/")
-    html_str = _DECK_TEMPLATE.replace("__DECK__", payload).replace("__START__", str(int(start)))
+    init_json = json.dumps(init, ensure_ascii=False).replace("</", "<\\/")
+    html_str = _STUDY_TEMPLATE.replace("__DECK__", payload).replace("__INIT__", init_json)
     st_html(html_str, height=480, scrolling=True)
+
 
 
 STATUS_LABEL = {"new": "🆕 新規", "review": "🔁 復習する", "mastered": "✅ 習得済み"}
@@ -1211,13 +1283,12 @@ FILTER_LABEL = {"all": "全て", "new": "🆕 新規", "review": "🔁 復習す
 
 # ── タブ: 学習(カード一覧・復習) ───────────────────────────────────────────
 if _active_tab == "学習":
-    # ── 学習デッキ(JS)からの回収口 ──────────────────────────────────────
-    # めくり/わかる/わからない はiframe内のJSで完結しサーバーへ来ない。判定は
-    # localStorage['wg_judgments'] に溜まり、戻る/作り直す/削除 を押した時だけ
-    # 隠しボタン wg_trigger が押されてここへ来る。
-    # 重要: カードを「開く」だけのときに js_eval を走らせると、その都度
-    # None→値→の二段再実行が挟まりデッキ表示が遅くなる。そこで js_eval は
-    # 「JSがアクションを起こした(wg_pending)」ときだけ読みに行く。
+    # ── 学習タブ(一覧+カード)を1つのJSコンポーネントで回す ──────────────────
+    # 一覧⇄カード・フィルタ・検索・めくり・詳細・音声・画像は全部iframe内のJSで完結。
+    # サーバー往復は「初回ロード・判定保存(flush)・削除・作り直し」だけ。判定はJSが
+    # localStorageに溜め、隠しボタン wg_trigger 経由でここが回収する。
+    # 重要: 判定flushでは deck_payload を作り直さない。同じhtmlを返せばStreamlitは
+    # iframeを再マウントしないので、裏で保存してもカード位置や画面状態が保たれる。
     st.markdown("<style>div.st-key-wg_trigger{display:none;}</style>", unsafe_allow_html=True)
     if st.button("t", key="wg_trigger"):  # JSから.click()される隠しトリガ
         st.session_state.wg_pending = True
@@ -1225,249 +1296,86 @@ if _active_tab == "学習":
 
     if st.session_state.get("wg_pending"):
         if streamlit_js_eval is None:
-            # 依存が無い環境への保険: 最低限デッキから抜ける
             st.session_state.wg_pending = False
-            st.session_state.pop("card_mode_rows", None)
-            st.session_state.pop("card_index", None)
-            st.rerun()
-        _nonce = st.session_state.get("wg_nonce", 0)
-        # 判定とアクションを1回のjs_evalでまとめて読む(往復を1サイクルに)
-        _raw = streamlit_js_eval(
-            js_expressions="JSON.stringify({j:localStorage.getItem('wg_judgments'),a:localStorage.getItem('wg_action')})",
-            key=f"wg_read_{_nonce}", want_output=True,
-        )
-        if _raw is not None:  # None の間はまだ取得待ち(次のrerunで届く)
-            try:
-                _payload = json.loads(_raw)
-            except Exception:
-                _payload = {}
-            _rj = _payload.get("j")
-            if _rj:
-                try:
-                    _jmap = json.loads(_rj)
-                except Exception:
-                    _jmap = {}
-                _items = [
-                    (int(k), v.get("status", "review"), int(v.get("inc", 1)))
-                    for k, v in _jmap.items()
-                ]
-                if _items:
-                    mark_judgments_batch(_items)
-            _action = None
-            _ra = _payload.get("a")
-            if _ra:
-                try:
-                    _action = json.loads(_ra)
-                except Exception:
-                    _action = None
-            if _action:
-                _atype = _action.get("type")
-                _aidx = int(_action.get("idx", 0))
-                _cm = st.session_state.get("card_mode_rows")
-                if _atype == "delete" and _cm and 0 <= _aidx < len(_cm):
-                    delete_sentence(_cm[_aidx]["id"])
-                    st.session_state.pop("card_mode_rows", None)
-                    st.session_state.pop("card_index", None)
-                elif _atype == "regen" and _cm and 0 <= _aidx < len(_cm):
-                    st.session_state["pending_regen_idx"] = _aidx
-                else:  # back(または不正) → 一覧へ
-                    st.session_state.pop("card_mode_rows", None)
-                    st.session_state.pop("card_index", None)
-            st.session_state.wg_pending = False
-            st.session_state.wg_nonce = _nonce + 1
-            streamlit_js_eval(
-                js_expressions="localStorage.removeItem('wg_judgments');localStorage.removeItem('wg_action');",
-                key=f"wg_clr_{_nonce}",
-            )
-            if not (_action and _action.get("type") == "regen"):
-                st.rerun()
-
-    # カード学習中はフィルタ/検索を隠す(邪魔なので)。一覧の時だけ表示する。
-    in_card_mode = st.session_state.get("card_mode_rows") is not None
-    if in_card_mode:
-        filter_choice = "all"
-        search_query = ""
-    else:
-        filter_choice = st.radio(
-            "表示するカード",
-            options=list(FILTER_LABEL.keys()),
-            format_func=lambda k: FILTER_LABEL[k],
-            horizontal=True,
-            key="status_filter",
-        )
-        search_query = st.text_input(
-            "キーワード検索（単語から）",
-            placeholder="例: negotiate",
-            key="hist_search",
-        )
-
-    if search_query:
-        base_rows = search_sentences(search_query)
-        if filter_choice != "all":
-            base_rows = [r for r in base_rows if r.get("status") == filter_choice]
-        rows = base_rows
-    else:
-        rows = get_sentences_by_status(filter_choice if filter_choice != "all" else None)
-
-    # フィルタ/検索が変わったら履歴のページを先頭に戻す
-    _hist_sig = (filter_choice, search_query)
-    if st.session_state.get("hist_filter_sig") != _hist_sig:
-        st.session_state.hist_filter_sig = _hist_sig
-        st.session_state.hist_page = 0
-
-    if rows and not in_card_mode:
-        view_counts = [r.get("view_count", 0) for r in rows]
-        lap_count = min(view_counts) if view_counts else 0
-        st.caption(
-            f"📊 {len(rows)}件 / 周回数(最小閲覧回数): **{lap_count}**　|　最大閲覧: {max(view_counts) if view_counts else 0}回"
-        )
-
-    if not rows:
-        st.info("該当するカードがありません。" if (search_query or filter_choice != "all") else "まだカードがありません。")
-        st.session_state.pop("card_mode_rows", None)
-    elif st.session_state.get("card_mode_rows") is not None and st.session_state.get("wg_pending"):
-        # アクション(戻る/削除/作り直す)の回収待ち。デッキを描き直すとチラつくので
-        # 一瞬だけプレースホルダを出す(直後のrerunで一覧へ/再描画される)。
-        st.caption("　")
-    elif st.session_state.get("card_mode_rows") is not None:
-        # ── フラッシュカードモード(クライアントサイド) ──
-        # デッキ全体を1つのiframeに渡し、めくり/詳細/音声/画像/わかる・わからないを
-        # すべてJSで完結させる。サーバー往復が無いのでカード送りはほぼ瞬時。
-        # 「作り直す」だけはAnthropic呼び出しが要るのでPython側で処理してから再描画する。
-        _regen_idx = st.session_state.pop("pending_regen_idx", None)
-        if _regen_idx is not None:
-            _cm = st.session_state.card_mode_rows
-            if 0 <= _regen_idx < len(_cm):
-                _r = _cm[_regen_idx]
-                with st.spinner("新しい例文を生成中..."):
-                    try:
-                        _regen = generate_sentence(_r["words"].split(","))
-                    except Exception as e:
-                        _regen = {}
-                        st.error(f"生成エラー: {e}")
-                if _regen.get("english"):
-                    update_sentence_content(
-                        _r["id"], _regen["english"], _regen["japanese"], _regen["explanation"]
-                    )
-                    _r["english"] = _regen["english"]
-                    _r["japanese"] = _regen["japanese"]
-                    _r["explanation"] = _regen["explanation"]
-                    _cm[_regen_idx] = _r
-                st.session_state.card_index = _regen_idx
-
-        _render_deck(
-            st.session_state.card_mode_rows,
-            st.session_state.get("card_index", 0),
-        )
-
-    else:
-        # ── 単語リスト表示 ──
-        edit_mode = st.toggle("✏️ 選択して削除", key="list_edit_mode")
-        st.caption("チェックを入れて削除" if edit_mode else "タップでカードを開く")
-        # 一覧ボタン(open_card_*)だけ中身を左揃いにする(既定は中央揃いで見づらいため)
-        st.markdown(
-            "<style>"
-            "div[class*='st-key-open_card_'] button{justify-content:flex-start !important;text-align:left !important;}"
-            "div[class*='st-key-open_card_'] button>div,"
-            "div[class*='st-key-open_card_'] button p{text-align:left !important;width:100%;justify-content:flex-start !important;}"
-            "</style>",
-            unsafe_allow_html=True,
-        )
-
-        def _row_label(row: dict) -> str:
-            words_display = " / ".join(row["words"].split(","))
-            icon = {"new": "🆕", "review": "🔁", "mastered": "✅"}.get(row.get("status", "new"), "🆕")
-            return f"{icon}  {words_display}"
-
-        # ── ページング ──
-        # Streamlitは再実行のたびに全カードぶんのボタンを作り直すため、
-        # 表示を1ページ分に絞って描画コスト(=体感の重さ)を抑える。
-        # カードめくりは card_mode_rows=rows(全件) なので全体を辿れる。
-        PAGE_SIZE = 20
-        total = len(rows)
-        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = max(0, min(st.session_state.get("hist_page", 0), total_pages - 1))
-        st.session_state.hist_page = page
-        start = page * PAGE_SIZE
-        page_rows = rows[start : start + PAGE_SIZE]
-
-        def _page_nav(key_prefix: str) -> None:
-            if total_pages <= 1:
-                return
-            pc1, pc2, pc3 = st.columns([1, 2, 1])
-            with pc1:
-                if st.button("← 前", use_container_width=True, disabled=(page == 0), key=f"{key_prefix}_prev"):
-                    st.session_state.hist_page = page - 1
-                    st.rerun()
-            with pc2:
-                st.markdown(
-                    f"<div style='text-align:center;padding-top:8px;color:#666;'>"
-                    f"{start + 1}–{min(start + PAGE_SIZE, total)} / {total}件　({page + 1}/{total_pages}ページ)"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            with pc3:
-                if st.button("次 →", use_container_width=True, disabled=(page >= total_pages - 1), key=f"{key_prefix}_next"):
-                    st.session_state.hist_page = page + 1
-                    st.rerun()
-
-        if edit_mode:
-            ca, cb = st.columns(2)
-            with ca:
-                if st.button("全選択", use_container_width=True, key="sel_all_btn"):
-                    for r in rows:
-                        st.session_state[f"sel_{r['id']}"] = True
-                    st.rerun()
-            with cb:
-                if st.button("全解除", use_container_width=True, key="sel_none_btn"):
-                    for r in rows:
-                        st.session_state[f"sel_{r['id']}"] = False
-                    st.rerun()
-            _page_nav("edit_top")
-            # チェックボックスは現在ページ分だけ描画する。選択状態は session_state に
-            # 残るので、選択IDは全件を走査して集計する(ページをまたいでも選択は保持)。
-            for row in page_rows:
-                st.checkbox(_row_label(row), key=f"sel_{row['id']}")
-            selected_ids: list[int] = [r["id"] for r in rows if st.session_state.get(f"sel_{r['id']}")]
-            n = len(selected_ids)
-            _page_nav("edit_bottom")
-
-            if st.session_state.get("confirm_bulk_delete"):
-                st.warning(f"選択した {n} 件を本当に削除しますか？この操作は元に戻せません。")
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("はい、削除する", type="primary", use_container_width=True, key="do_bulk_delete"):
-                        for rid in selected_ids:
-                            delete_sentence(rid)
-                            st.session_state.pop(f"sel_{rid}", None)
-                        st.session_state.confirm_bulk_delete = False
-                        st.rerun()
-                with c2:
-                    if st.button("キャンセル", use_container_width=True, key="cancel_bulk_delete"):
-                        st.session_state.confirm_bulk_delete = False
-                        st.rerun()
-            elif st.button(
-                f"🗑️ 選択した {n} 件を削除",
-                type="secondary",
-                disabled=(n == 0),
-                use_container_width=True,
-                key="ask_bulk_delete",
-            ):
-                st.session_state.confirm_bulk_delete = True
-                st.rerun()
         else:
-            st.session_state.confirm_bulk_delete = False
-            _page_nav("list_top")
-            for offset, row in enumerate(page_rows):
-                view_n = row.get("view_count", 0)
-                if st.button(
-                    f"{_row_label(row)}　({view_n}回)",
-                    key=f"open_card_{row['id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state.card_mode_rows = rows
-                    st.session_state.card_index = start + offset  # 全件中のグローバルindex
-                    st.session_state.card_finished = False
-                    st.session_state.pop("last_viewed_card_id", None)
-                    st.rerun()
-            _page_nav("list_bottom")
+            _nonce = st.session_state.get("wg_nonce", 0)
+            _raw = streamlit_js_eval(
+                js_expressions="JSON.stringify({j:localStorage.getItem('wg_judgments'),a:localStorage.getItem('wg_action')})",
+                key=f"wg_read_{_nonce}", want_output=True,
+            )
+            if _raw is not None:  # None の間はまだ取得待ち(次のrerunで届く)
+                try:
+                    _payload = json.loads(_raw)
+                except Exception:
+                    _payload = {}
+                _rj = _payload.get("j")
+                if _rj:
+                    try:
+                        _jmap = json.loads(_rj)
+                    except Exception:
+                        _jmap = {}
+                    _items = [
+                        (int(k), v.get("status", "review"), int(v.get("inc", 1)))
+                        for k, v in _jmap.items()
+                    ]
+                    if _items:
+                        mark_judgments_batch(_items)
+                _action = None
+                _ra = _payload.get("a")
+                if _ra:
+                    try:
+                        _action = json.loads(_ra)
+                    except Exception:
+                        _action = None
+                if _action:
+                    _t = _action.get("type")
+                    if _t == "delete":
+                        _ids = _action.get("ids") or ([_action["id"]] if _action.get("id") else [])
+                        for _i in _ids:
+                            try:
+                                delete_sentence(int(_i))
+                            except Exception:
+                                pass
+                        st.session_state.deck_payload = None  # 構成が変わったので作り直す
+                        st.session_state.deck_init = {"screen": "list"}
+                    elif _t == "regen":
+                        _id = int(_action.get("id", 0))
+                        _row = next(
+                            (r for r in (st.session_state.get("deck_rows") or []) if r["id"] == _id),
+                            None,
+                        )
+                        if _row:
+                            with st.spinner("新しい例文を生成中..."):
+                                try:
+                                    _regen = generate_sentence(_row["words"].split(","))
+                                except Exception as e:
+                                    _regen = {}
+                                    st.error(f"生成エラー: {e}")
+                            if _regen.get("english"):
+                                update_sentence_content(
+                                    _id, _regen["english"], _regen["japanese"], _regen["explanation"]
+                                )
+                            st.session_state.deck_payload = None
+                            st.session_state.deck_init = {"screen": "card", "id": _id, "revealed": True}
+                    # "flush" は判定を反映するだけ。画面状態(deck_init)は変えない。
+                st.session_state.wg_pending = False
+                st.session_state.wg_nonce = _nonce + 1
+                streamlit_js_eval(
+                    js_expressions="localStorage.removeItem('wg_judgments');localStorage.removeItem('wg_action');",
+                    key=f"wg_clr_{_nonce}",
+                )
+
+    # デッキデータを構築してセッションにキャッシュする。判定flushでは作り直さないので
+    # 同一htmlになり、iframeは再マウントされない(=裏で保存しても画面が飛ばない)。
+    if st.session_state.get("deck_payload") is None:
+        _rows = get_sentences_by_status(None)
+        st.session_state.deck_rows = _rows
+        st.session_state.deck_payload = _build_deck(_rows, 0)
+
+    if not st.session_state.deck_payload:
+        st.info("まだカードがありません。「生成」か「一括取込」タブで作ってください。")
+    else:
+        _render_study(
+            st.session_state.deck_payload,
+            st.session_state.get("deck_init", {"screen": "list"}),
+        )
