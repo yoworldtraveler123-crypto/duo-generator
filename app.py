@@ -1001,9 +1001,10 @@ def _build_deck(rows: list[dict], start: int = 0) -> list[dict]:
     ids = [r["id"] for r in rows]
     # 音声URLを出すかは「blobを持つか」で即判定(本体は読まない)。実ファイルの書き出しは
     # 表示する数枚を優先し、残りは裏で用意する。
-    audio_ids = get_audio_ids(ids)
-    _start = max(0, min(int(start), len(ids) - 1)) if ids else 0
-    _materialize_audio(list(audio_ids), priority=ids[_start:_start + 6])
+    # 音声は base64 データURIで埋め込む。Streamlitの静的配信は Content-Type:text/plain +
+    # nosniff になりブラウザが <audio> として再生を拒否する(→機械音にフォールバック)ため、
+    # 静的ファイルURLは使えない。データURIなら audio/mpeg を自前で持つので確実に鳴る。
+    audio_blobs = get_audio_blobs(ids)
     imgs_by_id = get_image_data_batch(ids)
     deck: list[dict] = []
     for r in rows:
@@ -1038,7 +1039,10 @@ def _build_deck(rows: list[dict], start: int = 0) -> list[dict]:
             "vc": r.get("view_count", 0),
             "status": r.get("status", "new"),
             "wstr": r["words"],  # 検索用の素の単語文字列
-            "audio": f"/app/static/audio/{rid}.mp3" if rid in audio_ids else "",
+            "audio": (
+                "data:audio/mpeg;base64," + base64.b64encode(audio_blobs[rid]).decode()
+                if rid in audio_blobs else ""
+            ),
             "plain": r["english"],
             "words": words,
             "imgs": imgs,
