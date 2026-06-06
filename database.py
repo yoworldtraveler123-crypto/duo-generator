@@ -235,6 +235,20 @@ def get_audio_blobs(ids: list[int]) -> dict[int, bytes]:
     return out
 
 
+def get_audio_ids(ids: list[int]) -> set[int]:
+    """指定ID群のうち音声blobを持つidの集合を返す(blob本体は読まない=軽い)。
+    デッキ構築時に「音声URLを出すか/ブラウザTTSにするか」を即決するため。"""
+    if not ids:
+        return set()
+    placeholders = ",".join("?" * len(ids))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM sentences WHERE id IN ({placeholders}) AND audio_blob IS NOT NULL",
+            tuple(ids),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def get_image_data_batch(ids: list[int]) -> dict[int, dict]:
     """指定ID群の画像URLマップを一括取得。{id: {word: [画像情報,...]}}。
     APIは叩かず保存済みのものだけ返す(未取得の単語は空)。"""

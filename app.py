@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -22,6 +23,7 @@ from database import (
     get_all_sentences,
     get_audio_blob,
     get_audio_blobs,
+    get_audio_ids,
     get_image_data,
     get_image_data_batch,
     get_sentences_by_status,
@@ -955,30 +957,46 @@ _AUDIO_DIR = Path(__file__).parent / "static" / "audio"
 _AUDIO_ON_DISK: set[int] = set()  # プロセス内で書き出し済みのid(再書き出しを避ける)
 
 
-def _materialize_audio(ids: list[int]) -> set[int]:
-    """各IDの音声blobを static/audio/{id}.mp3 へ書き出し、URL参照できるようにする。
-    全件base64でiframeに埋めると初回マウントが激重になるのを避けるための仕組み。
-    既に書き出し済み(プロセス内)はスキップ。戻り値=音声を持つidの集合。"""
+def _write_audio_files(ids: list[int]) -> None:
+    """指定idの音声blobを static/audio/{id}.mp3 へ書き出す。"""
+    try:
+        _AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        for rid, blob in get_audio_blobs(ids).items():
+            try:
+                (_AUDIO_DIR / f"{rid}.mp3").write_bytes(blob)
+                _AUDIO_ON_DISK.add(rid)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _materialize_audio(ids: list[int], priority: list[int]) -> None:
+    """音声mp3をディスクへ用意する。表示中・直近のカード(priority)だけ同期的に書き、
+    残りはバックグラウンドスレッドで書く。全件base64でiframeに埋めると初回マウントが
+    激重になるのを避けつつ、デッキ入場の待ち時間も最小化する狙い。"""
     need = [i for i in ids if i not in _AUDIO_ON_DISK]
-    if need:
-        try:
-            _AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-            for rid, blob in get_audio_blobs(need).items():
-                try:
-                    (_AUDIO_DIR / f"{rid}.mp3").write_bytes(blob)
-                    _AUDIO_ON_DISK.add(rid)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    return {i for i in ids if i in _AUDIO_ON_DISK}
+    if not need:
+        return
+    need_set = set(need)
+    prio = [i for i in priority if i in need_set]
+    rest = [i for i in need if i not in set(prio)]
+    if prio:
+        _write_audio_files(prio)  # 表示する数枚だけ即書き出し
+    if rest:
+        # 残りは裏で書く(ユーザーがめくって到達する頃には書き終わっている想定)
+        threading.Thread(target=_write_audio_files, args=(rest,), daemon=True).start()
 
 
-def _build_deck(rows: list[dict]) -> list[dict]:
+def _build_deck(rows: list[dict], start: int = 0) -> list[dict]:
     """card_mode_rows からクライアント側デッキ用のJSONデータを組み立てる。
     解説のパースは @st.cache_data 済みの関数を使うので使い回しが効く。"""
     ids = [r["id"] for r in rows]
-    have_audio = _materialize_audio(ids)
+    # 音声URLを出すかは「blobを持つか」で即判定(本体は読まない)。実ファイルの書き出しは
+    # 表示する数枚を優先し、残りは裏で用意する。
+    audio_ids = get_audio_ids(ids)
+    _start = max(0, min(int(start), len(ids) - 1)) if ids else 0
+    _materialize_audio(list(audio_ids), priority=ids[_start:_start + 6])
     imgs_by_id = get_image_data_batch(ids)
     deck: list[dict] = []
     for r in rows:
@@ -1011,7 +1029,7 @@ def _build_deck(rows: list[dict]) -> list[dict]:
             "eng": _highlight_target_words(r["english"], words_list),
             "jp": _highlight_japanese(r["japanese"]),
             "vc": r.get("view_count", 0),
-            "audio": f"/app/static/audio/{rid}.mp3" if rid in have_audio else "",
+            "audio": f"/app/static/audio/{rid}.mp3" if rid in audio_ids else "",
             "plain": r["english"],
             "words": words,
             "imgs": imgs,
@@ -1111,6 +1129,7 @@ _DECK_TEMPLATE = r"""
     function u(){if(a.duration)sk.value=a.currentTime/a.duration*100;tm.textContent=f(a.currentTime)+'/'+f(a.duration||0);}
     a.addEventListener('timeupdate',u);a.addEventListener('loadedmetadata',u);
     a.addEventListener('play',()=>pp.textContent='⏸');a.addEventListener('pause',()=>pp.textContent='▶');a.addEventListener('ended',()=>pp.textContent='▶');
+    a.addEventListener('error',()=>{try{speak(DECK[i].plain);}catch(e){}});
     pp.onclick=()=>{a.paused?a.play():a.pause();};
     document.getElementById('wgbk').onclick=()=>{a.currentTime=Math.max(0,a.currentTime-3);};
     document.getElementById('wgfw').onclick=()=>{a.currentTime=Math.min(a.duration||1e9,a.currentTime+3);};
@@ -1180,7 +1199,7 @@ _DECK_TEMPLATE = r"""
 
 
 def _render_deck(rows: list[dict], start: int) -> None:
-    deck = _build_deck(rows)
+    deck = _build_deck(rows, start)
     payload = json.dumps(deck, ensure_ascii=False).replace("</", "<\\/")
     html_str = _DECK_TEMPLATE.replace("__DECK__", payload).replace("__START__", str(int(start)))
     st_html(html_str, height=480, scrolling=True)
@@ -1195,69 +1214,73 @@ if _active_tab == "学習":
     # ── 学習デッキ(JS)からの回収口 ──────────────────────────────────────
     # めくり/わかる/わからない はiframe内のJSで完結しサーバーへ来ない。判定は
     # localStorage['wg_judgments'] に溜まり、戻る/作り直す/削除 を押した時だけ
-    # 隠しボタン wg_trigger が押されてここへ来る。その節目でまとめてDBへ反映する。
+    # 隠しボタン wg_trigger が押されてここへ来る。
+    # 重要: カードを「開く」だけのときに js_eval を走らせると、その都度
+    # None→値→の二段再実行が挟まりデッキ表示が遅くなる。そこで js_eval は
+    # 「JSがアクションを起こした(wg_pending)」ときだけ読みに行く。
     st.markdown("<style>div.st-key-wg_trigger{display:none;}</style>", unsafe_allow_html=True)
-    _woke = st.button("t", key="wg_trigger")  # JSから.click()される隠しトリガ
-    if _woke:
-        # js_eval を再読込させるため key を変える(同じkeyだと前回値がキャッシュされる)
+    if st.button("t", key="wg_trigger"):  # JSから.click()される隠しトリガ
+        st.session_state.wg_pending = True
         st.session_state.wg_nonce = st.session_state.get("wg_nonce", 0) + 1
-    _nonce = st.session_state.get("wg_nonce", 0)
-    if streamlit_js_eval is not None:
-        _raw_j = streamlit_js_eval(
-            js_expressions="localStorage.getItem('wg_judgments')||''",
-            key=f"wg_jud_{_nonce}", want_output=True,
+
+    if st.session_state.get("wg_pending"):
+        if streamlit_js_eval is None:
+            # 依存が無い環境への保険: 最低限デッキから抜ける
+            st.session_state.wg_pending = False
+            st.session_state.pop("card_mode_rows", None)
+            st.session_state.pop("card_index", None)
+            st.rerun()
+        _nonce = st.session_state.get("wg_nonce", 0)
+        # 判定とアクションを1回のjs_evalでまとめて読む(往復を1サイクルに)
+        _raw = streamlit_js_eval(
+            js_expressions="JSON.stringify({j:localStorage.getItem('wg_judgments'),a:localStorage.getItem('wg_action')})",
+            key=f"wg_read_{_nonce}", want_output=True,
         )
-        _raw_a = streamlit_js_eval(
-            js_expressions="localStorage.getItem('wg_action')||''",
-            key=f"wg_act_{_nonce}", want_output=True,
-        )
-        _did = False
-        if _raw_j:
+        if _raw is not None:  # None の間はまだ取得待ち(次のrerunで届く)
             try:
-                _jmap = json.loads(_raw_j)
+                _payload = json.loads(_raw)
             except Exception:
-                _jmap = {}
-            _items = [
-                (int(k), v.get("status", "review"), int(v.get("inc", 1)))
-                for k, v in _jmap.items()
-            ]
-            if _items:
-                mark_judgments_batch(_items)
-                _did = True
-        _action = None
-        if _raw_a:
-            try:
-                _action = json.loads(_raw_a)
-            except Exception:
-                _action = None
-        if _action:
-            _did = True
-            _atype = _action.get("type")
-            _aidx = int(_action.get("idx", 0))
-            _cm = st.session_state.get("card_mode_rows")
-            if _atype == "delete" and _cm and 0 <= _aidx < len(_cm):
-                delete_sentence(_cm[_aidx]["id"])
-                st.session_state.pop("card_mode_rows", None)
-                st.session_state.pop("card_index", None)
-            elif _atype == "regen" and _cm and 0 <= _aidx < len(_cm):
-                st.session_state["pending_regen_idx"] = _aidx
-            else:  # back(または不正) → 一覧へ
-                st.session_state.pop("card_mode_rows", None)
-                st.session_state.pop("card_index", None)
-        if _did:
-            st.session_state.wg_nonce = _nonce + 1  # 次回は空読みになるよう進める
+                _payload = {}
+            _rj = _payload.get("j")
+            if _rj:
+                try:
+                    _jmap = json.loads(_rj)
+                except Exception:
+                    _jmap = {}
+                _items = [
+                    (int(k), v.get("status", "review"), int(v.get("inc", 1)))
+                    for k, v in _jmap.items()
+                ]
+                if _items:
+                    mark_judgments_batch(_items)
+            _action = None
+            _ra = _payload.get("a")
+            if _ra:
+                try:
+                    _action = json.loads(_ra)
+                except Exception:
+                    _action = None
+            if _action:
+                _atype = _action.get("type")
+                _aidx = int(_action.get("idx", 0))
+                _cm = st.session_state.get("card_mode_rows")
+                if _atype == "delete" and _cm and 0 <= _aidx < len(_cm):
+                    delete_sentence(_cm[_aidx]["id"])
+                    st.session_state.pop("card_mode_rows", None)
+                    st.session_state.pop("card_index", None)
+                elif _atype == "regen" and _cm and 0 <= _aidx < len(_cm):
+                    st.session_state["pending_regen_idx"] = _aidx
+                else:  # back(または不正) → 一覧へ
+                    st.session_state.pop("card_mode_rows", None)
+                    st.session_state.pop("card_index", None)
+            st.session_state.wg_pending = False
+            st.session_state.wg_nonce = _nonce + 1
             streamlit_js_eval(
                 js_expressions="localStorage.removeItem('wg_judgments');localStorage.removeItem('wg_action');",
                 key=f"wg_clr_{_nonce}",
             )
             if not (_action and _action.get("type") == "regen"):
                 st.rerun()
-    elif _woke:
-        # streamlit-js-eval が無い環境への保険。localStorageは読めないので
-        # 判定/作り直しは反映できないが、最低限デッキから抜けられるようにする。
-        st.session_state.pop("card_mode_rows", None)
-        st.session_state.pop("card_index", None)
-        st.rerun()
 
     # カード学習中はフィルタ/検索を隠す(邪魔なので)。一覧の時だけ表示する。
     in_card_mode = st.session_state.get("card_mode_rows") is not None
@@ -1302,6 +1325,10 @@ if _active_tab == "学習":
     if not rows:
         st.info("該当するカードがありません。" if (search_query or filter_choice != "all") else "まだカードがありません。")
         st.session_state.pop("card_mode_rows", None)
+    elif st.session_state.get("card_mode_rows") is not None and st.session_state.get("wg_pending"):
+        # アクション(戻る/削除/作り直す)の回収待ち。デッキを描き直すとチラつくので
+        # 一瞬だけプレースホルダを出す(直後のrerunで一覧へ/再描画される)。
+        st.caption("　")
     elif st.session_state.get("card_mode_rows") is not None:
         # ── フラッシュカードモード(クライアントサイド) ──
         # デッキ全体を1つのiframeに渡し、めくり/詳細/音声/画像/わかる・わからないを
