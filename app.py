@@ -26,11 +26,13 @@ from database import (
     get_audio_ids,
     get_image_data,
     get_image_data_batch,
+    get_monthly_usage,
     get_sentences_by_status,
     get_used_words,
     init_db,
     mark_judgments_batch,
     mark_status_and_view,
+    record_usage,
     save_audio_blob,
     save_image_data,
     save_sentence,
@@ -151,6 +153,23 @@ def _parse_response(text: str) -> dict[str, str]:
     }
 
 
+def _record_api_usage(model: str, response) -> None:
+    """APIレスポンスの usage を取り出して利用量テーブルに記録する。
+    記録は付帯処理なので、何が起きても生成本体は止めないよう握りつぶす。"""
+    try:
+        u = response.usage
+        record_usage(
+            model=model,
+            input_tokens=getattr(u, "input_tokens", 0) or 0,
+            output_tokens=getattr(u, "output_tokens", 0) or 0,
+            cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
+            user_email=(getattr(st.user, "email", "") or "") if not _LOCAL_NOAUTH else "local",
+        )
+    except Exception:
+        pass
+
+
 def generate_sentence(words: list[str]) -> dict[str, str]:
     client = anthropic.Anthropic()
     words_str = "、".join(words)
@@ -189,6 +208,7 @@ def generate_sentence(words: list[str]) -> dict[str, str]:
         system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_message}],
     )
+    _record_api_usage("claude-haiku-4-5", response)
 
     text = next((b.text for b in response.content if b.type == "text"), "")
     parsed = _parse_response(text)
@@ -245,6 +265,7 @@ def extract_words_from_image(image_bytes: bytes, media_type: str) -> list[str]:
             }
         ],
     )
+    _record_api_usage("claude-sonnet-4-5", response)
 
     text = next((b.text for b in response.content if b.type == "text"), "")
     words = [w.strip().lower() for w in text.splitlines() if w.strip() and re.fullmatch(r"[a-zA-Z\-']+", w.strip())]
@@ -363,6 +384,23 @@ if not st.session_state.get("_pwa_injected"):
     st.session_state._pwa_injected = True
 
 init_db()
+
+# 今月のAPI概算コストをサイドバーに表示(api_usage作成後なので確実にテーブルがある)。
+# Anthropic側で月$5のハード上限があるので、$5に達して突然止まる前に気づくための可視化。
+_COST_CAP_USD = 5.0
+try:
+    _usage = get_monthly_usage()
+    with st.sidebar:
+        st.divider()
+        _ratio = min(_usage["cost"] / _COST_CAP_USD, 1.0)
+        st.progress(_ratio)
+        _line = f"今月の概算: ${_usage['cost']:.2f} / ${_COST_CAP_USD:.0f}（{_usage['calls']}回）"
+        if _usage["cost"] >= 4.0:
+            st.warning(_line + "  上限に接近")
+        else:
+            st.caption(_line)
+except Exception:
+    pass  # 集計失敗(初回など)で本体は止めない
 
 # タブ切り替え。st.tabs は全タブの中身を毎回実行してしまい、Streamlitの
 # 「クリックごとに全スクリプト再実行」と相まって重い。選択中のタブだけを

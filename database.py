@@ -143,7 +143,64 @@ def init_db() -> None:
             conn.execute("ALTER TABLE sentences ADD COLUMN audio_blob BLOB")
         if "image_data" not in cols:
             conn.execute("ALTER TABLE sentences ADD COLUMN image_data TEXT")
+        # API利用量(トークン数・概算コスト)の記録テーブル。月次の使用量可視化に使う。
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at    TEXT    NOT NULL,
+                model         TEXT    NOT NULL,
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write   INTEGER NOT NULL DEFAULT 0,
+                cache_read    INTEGER NOT NULL DEFAULT 0,
+                cost_usd      REAL    NOT NULL DEFAULT 0,
+                user_email    TEXT    NOT NULL DEFAULT ''
+            )
+        """)
     _initialized = True
+
+
+# Anthropic 各モデルの 100万トークンあたり料金(USD): (入力, 出力, キャッシュ書込, キャッシュ読込)。
+# 価格改定時はここだけ直せばよい。未知モデルは 0 として記録だけ残す。
+_PRICING = {
+    "claude-haiku-4-5": (1.00, 5.00, 1.25, 0.10),
+    "claude-sonnet-4-5": (3.00, 15.00, 3.75, 0.30),
+}
+
+
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int,
+                      cache_write: int = 0, cache_read: int = 0) -> float:
+    """トークン数からドル概算を出す。input_tokens はキャッシュ未ヒット分のみ(API仕様)。"""
+    inp, outp, cw, cr = _PRICING.get(model, (0.0, 0.0, 0.0, 0.0))
+    return (input_tokens * inp + output_tokens * outp
+            + cache_write * cw + cache_read * cr) / 1_000_000
+
+
+def record_usage(model: str, input_tokens: int, output_tokens: int,
+                 cache_write: int = 0, cache_read: int = 0, user_email: str = "") -> None:
+    """1回のAPI呼び出しのトークン量と概算コストを api_usage に追記する。
+    生成は高頻度操作ではないので sync=True(後追いpush)で十分。記録失敗で生成本体は止めない。"""
+    cost = estimate_cost_usd(model, input_tokens, output_tokens, cache_write, cache_read)
+    with _connect(sync=True) as conn:
+        conn.execute(
+            "INSERT INTO api_usage (created_at, model, input_tokens, output_tokens, "
+            "cache_write, cache_read, cost_usd, user_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(timespec="seconds"), model, input_tokens,
+             output_tokens, cache_write, cache_read, cost, user_email),
+        )
+
+
+def get_monthly_usage(year_month: str | None = None) -> dict:
+    """指定月(YYYY-MM, 省略時は当月)の概算コスト合計と呼び出し回数を返す。
+    created_at は ISO 文字列なので前方一致で月を絞る。"""
+    if year_month is None:
+        year_month = datetime.now().strftime("%Y-%m")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM api_usage WHERE created_at LIKE ?",
+            (f"{year_month}%",),
+        ).fetchone()
+    return {"cost": float(row[0] or 0), "calls": int(row[1] or 0), "month": year_month}
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str) -> int:
