@@ -514,6 +514,17 @@ if _active_tab == "生成":
                                     pass
 
                     st.caption("💾 保存しました(音声・画像も準備済み)")
+
+                    # 🔍一時デバッグ: 画像が出ない原因を画面に出す。原因特定後に削除する。
+                    _dbg = [f"key={bool(os.getenv('UNSPLASH_ACCESS_KEY'))}"]
+                    try:
+                        _probe = _fetch_unsplash_images(words[0])
+                        _dbg.append(f"fetch '{words[0]}'→{len(_probe)}枚")
+                    except Exception as _e:
+                        _dbg.append(f"err={type(_e).__name__}:{_e}")
+                    _saved = get_image_data(new_id)
+                    _dbg.append(f"DB保存={sum(len(v) for v in _saved.values())}枚")
+                    st.warning("🔍DEBUG " + " | ".join(_dbg))
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 
