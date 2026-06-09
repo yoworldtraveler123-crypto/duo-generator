@@ -1154,7 +1154,7 @@ _STUDY_TEMPLATE = r"""
   const V=id=>(live[id]&&live[id].vc!=null)?live[id].vc:(byId[id].vc||0);
 
   let screen='list', filter='all', search='', edit=false;
-  let playlist=[], idx=0, revealed=false, imgWord=null;
+  let playlist=[], idx=0, revealed=false, imgWord=null, autoplay=false;
   const sel=new Set();
   const root=document.getElementById('wgapp');
 
@@ -1186,10 +1186,10 @@ _STUDY_TEMPLATE = r"""
     const c=playlist[idx];const j=loadJ();const e=j[c.id]||{status:status,inc:0};e.status=status;e.inc=(e.inc||0)+1;j[c.id]=e;
     localStorage.setItem('wg_judgments',JSON.stringify(j));
     live[c.id]={status:status,vc:V(c.id)+1};
-    if(idx>=playlist.length-1){finished();}else{idx++;revealed=false;imgWord=null;renderCard();}
+    if(idx>=playlist.length-1){finished();}else{idx++;revealed=false;imgWord=null;autoplay=true;renderCard();}
   }
   function toList(){screen='list';flush();renderList();}
-  function openCard(id){playlist=filtered();idx=Math.max(0,playlist.findIndex(c=>c.id===id));screen='card';revealed=false;imgWord=null;renderCard();}
+  function openCard(id){playlist=filtered();idx=Math.max(0,playlist.findIndex(c=>c.id===id));screen='card';revealed=false;imgWord=null;autoplay=true;renderCard();}
 
   // ── 一覧画面 ──
   function renderList(){
@@ -1234,7 +1234,7 @@ _STUDY_TEMPLATE = r"""
     root.innerHTML='<div class="wg-card" style="text-align:center;"><div style="font-size:18px;font-weight:700;margin-bottom:12px;">🎉 このセットの最後でした!</div>'
       +'<button class="wg-btn wg-ok" id="wgrestart" style="width:100%;padding:12px 0;margin-bottom:8px;">最初から</button>'
       +'<button class="wg-btn wg-reveal" id="wgback2">← 一覧に戻る</button></div>';
-    document.getElementById('wgrestart').onclick=()=>{idx=0;revealed=false;imgWord=null;renderCard();};
+    document.getElementById('wgrestart').onclick=()=>{idx=0;revealed=false;imgWord=null;autoplay=true;renderCard();};
     document.getElementById('wgback2').onclick=toList;
     flush();fit();
   }
@@ -1256,7 +1256,7 @@ _STUDY_TEMPLATE = r"""
     document.getElementById('wgbk').onclick=()=>{a.currentTime=Math.max(0,a.currentTime-3);};
     document.getElementById('wgfw').onclick=()=>{a.currentTime=Math.min(a.duration||1e9,a.currentTime+3);};
     sk.oninput=()=>{if(a.duration)a.currentTime=sk.value/100*a.duration;};
-    setTimeout(()=>a.play().catch(()=>{}),120);
+    if(autoplay){autoplay=false;setTimeout(()=>a.play().catch(()=>{}),120);}
   }
   function renderCard(){
     const c=playlist[idx];if(!c){toList();return;}
