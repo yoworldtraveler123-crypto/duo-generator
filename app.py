@@ -1258,6 +1258,36 @@ _STUDY_TEMPLATE = r"""
     sk.oninput=()=>{if(a.duration)a.currentTime=sk.value/100*a.duration;};
     if(autoplay){autoplay=false;setTimeout(()=>a.play().catch(()=>{}),120);}
   }
+  function detailHTML(c){
+    let wb='';
+    for(const w of c.words){
+      let p='<span class="wg-w">'+esc(w.w)+'</span>';
+      if(w.pos)p+='<span class="wg-pos">【'+esc(w.pos)+'】</span>';
+      if(w.ipa)p+='<span class="wg-ipa">/'+esc(w.ipa)+'/</span>';
+      if(w.syn)p+='<span class="wg-syn">≈ '+esc(w.syn)+'</span>';
+      wb+='<div class="wg-wrow"><div class="wg-whead">'+p+'</div>'+(w.meaning?'<div class="wg-mean">: '+esc(w.meaning)+'</div>':'')+'</div>';
+    }
+    let h='<div class="wg-card"><div class="wg-lbl">単語</div><div style="margin-bottom:10px;">'+wb+'</div><div class="wg-lbl">和訳</div><div style="font-size:14px;line-height:1.5;">'+c.jp+'</div></div>';
+    const iws=c.words.map(w=>w.w).filter(w=>(c.imgs[w.toLowerCase()]||[]).length);
+    if(iws.length){
+      if(!imgWord||iws.indexOf(imgWord)<0)imgWord=iws[0];
+      h+='<div class="wg-lbl" style="margin-top:8px;">🖼️ 単語のイメージ</div><div class="wg-imgword" id="wgiw">';
+      for(const w of iws)h+='<button data-w="'+esc(w)+'" class="'+(w===imgWord?'on':'')+'">'+esc(w)+'</button>';
+      h+='</div><div class="wg-car" id="wgcar"></div>';
+    }
+    h+='<button class="wg-sec" id="wgregen">🔄 別の例文で作り直す</button>';
+    h+='<div style="text-align:center;"><button class="wg-del" id="wgdel">このカードを削除</button></div>';
+    return h;
+  }
+  function wireDetail(c){
+    const rg=document.getElementById('wgregen');if(rg)rg.onclick=()=>act('regen',{id:c.id});
+    const dl=document.getElementById('wgdel');if(dl)dl.onclick=()=>{if(confirm('このカードを削除しますか?'))act('delete',{ids:[c.id]});};
+    const iw=document.getElementById('wgiw');
+    if(iw){iw.querySelectorAll('button').forEach(b=>b.onclick=()=>{imgWord=b.getAttribute('data-w');iw.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderImgs(c);});renderImgs(c);}
+  }
+  // 詳細表示は「下の領域だけ差し替え」で行う。カード全体(=音声プレイヤー)を作り直さないので
+  // 再生中の音声は止まらず・最初に戻らず、そのまま流れ続ける。
+  function reveal(){revealed=true;const d=document.getElementById('wgdetail');if(!d)return;d.innerHTML=detailHTML(playlist[idx]);wireDetail(playlist[idx]);fit();}
   function renderCard(){
     const c=playlist[idx];if(!c){toList();return;}
     let h='';
@@ -1270,44 +1300,19 @@ _STUDY_TEMPLATE = r"""
         +'<input id="wgsk" class="wg-sk" type="range" min="0" max="100" value="0" step="0.1"><span class="wg-tm" id="wgtm">0:00/0:00</span></div>';
     }else{h+='<div style="margin-top:8px;"><button class="wg-btn wg-ok" id="wgtts" style="width:100%;padding:11px 0;">🔊 タップして英文を聞く</button></div>';}
     h+='<div class="wg-card"><div class="wg-lbl">【英文】</div><div class="wg-en">'+c.eng+'</div></div>';
-    if(!revealed){h+='<button class="wg-btn wg-reveal" id="wgrev">詳細を見る</button>';}
-    else{
-      let wb='';
-      for(const w of c.words){
-        let p='<span class="wg-w">'+esc(w.w)+'</span>';
-        if(w.pos)p+='<span class="wg-pos">【'+esc(w.pos)+'】</span>';
-        if(w.ipa)p+='<span class="wg-ipa">/'+esc(w.ipa)+'/</span>';
-        if(w.syn)p+='<span class="wg-syn">≈ '+esc(w.syn)+'</span>';
-        wb+='<div class="wg-wrow"><div class="wg-whead">'+p+'</div>'+(w.meaning?'<div class="wg-mean">: '+esc(w.meaning)+'</div>':'')+'</div>';
-      }
-      h+='<div class="wg-card"><div class="wg-lbl">単語</div><div style="margin-bottom:10px;">'+wb+'</div><div class="wg-lbl">和訳</div><div style="font-size:14px;line-height:1.5;">'+c.jp+'</div></div>';
-      const iws=c.words.map(w=>w.w).filter(w=>(c.imgs[w.toLowerCase()]||[]).length);
-      if(iws.length){
-        if(!imgWord||iws.indexOf(imgWord)<0)imgWord=iws[0];
-        h+='<div class="wg-lbl" style="margin-top:8px;">🖼️ 単語のイメージ</div><div class="wg-imgword" id="wgiw">';
-        for(const w of iws)h+='<button data-w="'+esc(w)+'" class="'+(w===imgWord?'on':'')+'">'+esc(w)+'</button>';
-        h+='</div><div class="wg-car" id="wgcar"></div>';
-      }
-      h+='<button class="wg-sec" id="wgregen">🔄 別の例文で作り直す</button>';
-      h+='<div style="text-align:center;"><button class="wg-del" id="wgdel">このカードを削除</button></div>';
-    }
+    h+='<div id="wgdetail">'+(revealed?detailHTML(c):'<button class="wg-btn wg-reveal" id="wgrev">詳細を見る</button>')+'</div>';
     root.innerHTML=h;
     document.getElementById('wgback').onclick=toList;
     document.getElementById('wgng').onclick=()=>judge('review');
     document.getElementById('wgok').onclick=()=>judge('mastered');
     if(c.audio){setupAudio(c);}else{const t=document.getElementById('wgtts');if(t)t.onclick=()=>speak(c.plain);}
-    if(!revealed){document.getElementById('wgrev').onclick=()=>{revealed=true;renderCard();};}
-    else{
-      const rg=document.getElementById('wgregen');if(rg)rg.onclick=()=>act('regen',{id:c.id});
-      const dl=document.getElementById('wgdel');if(dl)dl.onclick=()=>{if(confirm('このカードを削除しますか?'))act('delete',{ids:[c.id]});};
-      const iw=document.getElementById('wgiw');
-      if(iw){iw.querySelectorAll('button').forEach(b=>b.onclick=()=>{imgWord=b.getAttribute('data-w');iw.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));renderImgs(c);});renderImgs(c);}
-    }
+    if(!revealed){document.getElementById('wgrev').onclick=reveal;}
+    else{wireDetail(c);}
     fit();
   }
 
   // ── 起動: INITで初期画面を決める(作り直し後はそのカードを開く) ──
-  if(INIT&&INIT.screen==='card'&&byId[INIT.id]){openCard(INIT.id);if(INIT.revealed){revealed=true;renderCard();}}
+  if(INIT&&INIT.screen==='card'&&byId[INIT.id]){openCard(INIT.id);if(INIT.revealed){reveal();}}
   else{renderList();}
 })();
 </script>
