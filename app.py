@@ -26,10 +26,12 @@ from database import (
     get_audio_ids,
     get_image_data,
     get_image_data_batch,
+    get_monthly_generation_count,
     get_monthly_usage,
     get_sentences_by_status,
     get_used_words,
     init_db,
+    is_paid,
     mark_judgments_batch,
     mark_status_and_view,
     record_usage,
@@ -329,6 +331,31 @@ def _current_user() -> str:
     return getattr(st.user, "email", "") or ""
 
 
+# ── 無料/有料の枠(工事②) ─────────────────────────────────────
+# 無料ユーザーは月 FREE_MONTHLY_LIMIT 回まで生成可。有料(is_paid)は無制限。
+# 数値・価格はここだけ直せば変えられる。価格は工事③(Stripe)の購入ボタン文言にも使う。
+FREE_MONTHLY_LIMIT = 10
+PRICE_LABEL = "¥500/月"
+
+
+def _quota() -> dict:
+    """現在ユーザーの当月生成枠の状況。{paid, used, limit, remaining}。
+    remaining は有料なら None(=無制限)。"""
+    user = _current_user()
+    paid = is_paid(user)
+    used = get_monthly_generation_count(user)
+    remaining = None if paid else max(0, FREE_MONTHLY_LIMIT - used)
+    return {"paid": paid, "used": used, "limit": FREE_MONTHLY_LIMIT, "remaining": remaining}
+
+
+def _quota_block_message() -> str:
+    """無料枠を使い切った時に出す案内文。"""
+    return (
+        f"今月の無料生成枠（{FREE_MONTHLY_LIMIT}回）を使い切りました。"
+        f"来月リセットされます。今すぐ無制限に使うにはアップグレード（{PRICE_LABEL}）をご検討ください。"
+    )
+
+
 # ── ログインゲート: 未ログインなら本体を出さず止める(Render上で有効) ──
 if not _LOCAL_NOAUTH and not st.user.is_logged_in:
     st.title("📚 単語ジェネ")
@@ -476,10 +503,18 @@ if _active_tab == "生成":
         key="words_input_area",
     )
 
+    _q = _quota()
+    if _q["paid"]:
+        st.caption("✓ 無制限プラン")
+    else:
+        st.caption(f"今月の生成: {_q['used']} / {_q['limit']} 回（無料枠）")
+
     if st.button("例文を生成", type="primary"):
         words = words_input.strip().split()
         if len(words) < 1 or len(words) > 3:
             st.error("1〜3語を入力してください。")
+        elif _q["remaining"] == 0:
+            st.error(_quota_block_message())
         else:
             try:
                 with st.spinner("生成中..."):
@@ -588,10 +623,17 @@ if _active_tab == "一括取込":
         status = st.empty()
         ok, ng = 0, 0
         errors: list[str] = []
+        _paid = is_paid(_current_user())
+        _used = get_monthly_generation_count(_current_user())
+        _quota_hit = False
         for i, grp in enumerate(groups, 1):
+            if not _paid and _used >= FREE_MONTHLY_LIMIT:
+                _quota_hit = True  # 無料枠を使い切ったら以降はスキップ(一括での枠バイパス防止)
+                break
             status.write(f"生成中… {i}/{len(groups)}　({', '.join(grp)})")
             try:
                 res = generate_sentence(grp)
+                _used += 1
                 if res["english"]:
                     save_sentence(grp, res["english"], res["japanese"], res["explanation"], _current_user())
                     ok += 1
@@ -614,6 +656,8 @@ if _active_tab == "一括取込":
         if ng:
             msg += f" 生成できなかったのが {ng} 文あります。"
         (st.success if ok else st.error)(msg)
+        if _quota_hit:
+            st.warning(_quota_block_message())
         if errors:
             st.warning("エラー例(最初の数件):\n\n" + "\n".join(f"- {e}" for e in errors))
         st.caption("音声・画像は「学習」タブで各カードを開いたときに生成されます(一括時はスキップ)。")
@@ -645,10 +689,17 @@ if _active_tab == "一括取込":
         _confirm = st.checkbox(
             "内容を理解した(既存カード削除・ステータスリセット)", key="rebuild_confirm"
         )
+        _q2 = _quota()
+        _rebuild_quota_ok = _q2["remaining"] is None or _q2["remaining"] >= len(_rebuild_groups)
+        if _rebuild_groups and not _rebuild_quota_ok:
+            st.caption(
+                f"⚠️ 作り直しには {len(_rebuild_groups)} 回分の生成枠が必要です"
+                f"（今月の残り {_q2['remaining']} 回）。{PRICE_LABEL} で無制限に。"
+            )
         if st.button(
             f"{len(_rebuild_groups)} 文に作り直す",
             type="primary",
-            disabled=not (_confirm and _rebuild_groups),
+            disabled=not (_confirm and _rebuild_groups and _rebuild_quota_ok),
             key="rebuild_btn",
         ):
             _old_ids = [row["id"] for row in _existing]

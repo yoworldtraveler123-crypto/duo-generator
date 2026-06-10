@@ -162,6 +162,15 @@ def init_db() -> None:
                 user_email    TEXT    NOT NULL DEFAULT ''
             )
         """)
+        # 課金状態(工事3のStripe webhookで更新)。is_paid() がここを見て無料/有料を判定する。
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_email          TEXT PRIMARY KEY,
+                status              TEXT NOT NULL DEFAULT 'inactive',
+                current_period_end  TEXT,
+                updated_at          TEXT
+            )
+        """)
         # 一度きりのバックフィル: 環境変数 WG_BACKFILL_OWNER にメールを入れて起動すると、
         # 所有者未設定('')の既存カードをそのユーザーのものにする(データ分離導入前のカード救済)。
         # 反映後は env を外してよい(以降 '' 行が無くなり no-op)。
@@ -212,6 +221,48 @@ def get_monthly_usage(year_month: str | None = None) -> dict:
             (f"{year_month}%",),
         ).fetchone()
     return {"cost": float(row[0] or 0), "calls": int(row[1] or 0), "month": year_month}
+
+
+# 例文生成に使うモデル。当月の「生成回数」カウント対象(無料枠の判定用)。
+_GEN_MODEL_PREFIX = "claude-haiku"
+
+
+def get_monthly_generation_count(user_email: str, year_month: str | None = None) -> int:
+    """本人の当月の例文生成回数(=生成モデル呼び出し回数)。無料枠の判定に使う。"""
+    if year_month is None:
+        year_month = datetime.now().strftime("%Y-%m")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM api_usage WHERE user_email = ? AND created_at LIKE ? AND model LIKE ?",
+            (user_email, f"{year_month}%", f"{_GEN_MODEL_PREFIX}%"),
+        ).fetchone()
+    return int(row[0] or 0)
+
+
+def is_paid(user_email: str) -> bool:
+    """本人が有料(無制限)か。環境変数 WG_UNLIMITED_USERS(カンマ区切り)に入っていれば常に有料扱い
+    (オーナー/テスト用のバイパス)。それ以外は subscriptions の status='active' を見る。"""
+    if not user_email:
+        return False
+    allow = {e.strip() for e in os.getenv("WG_UNLIMITED_USERS", "").split(",") if e.strip()}
+    if user_email in allow:
+        return True
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM subscriptions WHERE user_email = ?", (user_email,)
+        ).fetchone()
+    return bool(row) and row[0] == "active"
+
+
+def set_subscription(user_email: str, status: str, current_period_end: str = "") -> None:
+    """課金状態を upsert する(工事3のStripe webhookから呼ぶ想定)。"""
+    with _connect(sync=True) as conn:
+        conn.execute(
+            "INSERT INTO subscriptions (user_email, status, current_period_end, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(user_email) DO UPDATE SET "
+            "status=excluded.status, current_period_end=excluded.current_period_end, updated_at=excluded.updated_at",
+            (user_email, status, current_period_end, datetime.now().isoformat(timespec="seconds")),
+        )
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str, user_email: str = "") -> int:
