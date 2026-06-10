@@ -167,7 +167,7 @@ def _record_api_usage(model: str, response) -> None:
             output_tokens=getattr(u, "output_tokens", 0) or 0,
             cache_write=getattr(u, "cache_creation_input_tokens", 0) or 0,
             cache_read=getattr(u, "cache_read_input_tokens", 0) or 0,
-            user_email=(getattr(st.user, "email", "") or "") if not _LOCAL_NOAUTH else "local",
+            user_email=_current_user(),
         )
     except Exception:
         pass
@@ -319,6 +319,15 @@ st.set_page_config(page_title="単語ジェネ", page_icon="📚", layout="wide"
 # ローカル動作確認用の認証バイパス。環境変数 WG_LOCAL_NOAUTH=1 の時だけログインを飛ばす。
 # 本番(Render)では設定しないので影響なし。コミット時はこのフラグを残しても安全。
 _LOCAL_NOAUTH = os.getenv("WG_LOCAL_NOAUTH") == "1"
+
+
+def _current_user() -> str:
+    """ログイン中ユーザーの識別子(メール)。ローカルバイパス時は 'local'。
+    カードの所有者・利用量集計のキー。これで「本人のデータだけ」を担保する。"""
+    if _LOCAL_NOAUTH:
+        return "local"
+    return getattr(st.user, "email", "") or ""
+
 
 # ── ログインゲート: 未ログインなら本体を出さず止める(Render上で有効) ──
 if not _LOCAL_NOAUTH and not st.user.is_logged_in:
@@ -498,7 +507,7 @@ if _active_tab == "生成":
                         st.markdown("#### 【解説】")
                         st.info(result["explanation"])
 
-                    new_id = save_sentence(words, result["english"], result["japanese"], result["explanation"])
+                    new_id = save_sentence(words, result["english"], result["japanese"], result["explanation"], _current_user())
                     st.session_state.deck_payload = None  # 学習タブのデッキを作り直す
                     st.session_state.deck_init = {"screen": "list"}
 
@@ -558,7 +567,7 @@ if _active_tab == "一括取込":
     )
 
     words = _parse_word_list(bulk_text)
-    used = get_used_words()
+    used = get_used_words(_current_user())
     new_words = [w for w in words if w not in used]
     skipped = len(words) - len(new_words)
     groups = _chunk(new_words, 3)
@@ -584,7 +593,7 @@ if _active_tab == "一括取込":
             try:
                 res = generate_sentence(grp)
                 if res["english"]:
-                    save_sentence(grp, res["english"], res["japanese"], res["explanation"])
+                    save_sentence(grp, res["english"], res["japanese"], res["explanation"], _current_user())
                     ok += 1
                 else:
                     ng += 1
@@ -615,7 +624,7 @@ if _active_tab == "一括取込":
             "今ある全カードの単語を集めて重複を除き、3語ずつの新しい例文に作り直します。"
             "5語などの長い既存例文を短くするための一括メンテナンスです。"
         )
-        _existing = get_all_sentences()
+        _existing = get_all_sentences(_current_user())
         _all_words = _dedup_words(
             [
                 w.strip().lower()
@@ -652,7 +661,7 @@ if _active_tab == "一括取込":
                 try:
                     res = generate_sentence(grp)
                     if res["english"]:
-                        save_sentence(grp, res["english"], res["japanese"], res["explanation"])
+                        save_sentence(grp, res["english"], res["japanese"], res["explanation"], _current_user())
                         ok += 1
                     else:
                         failed_words += grp
@@ -664,7 +673,7 @@ if _active_tab == "一括取込":
             # 1文でも生成できた場合のみ旧カードを削除(全滅時はデータを守る)
             if ok > 0:
                 for oid in _old_ids:
-                    delete_sentence(oid)
+                    delete_sentence(oid, _current_user())
                 st.session_state.deck_payload = None  # 学習タブのデッキを作り直す
                 st.session_state.deck_init = {"screen": "list"}
                 msg = f"完了: {ok} 文に作り直し、旧 {len(_old_ids)} カードを削除しました。"
@@ -1383,7 +1392,7 @@ if _active_tab == "学習":
                         _ids = _action.get("ids") or ([_action["id"]] if _action.get("id") else [])
                         for _i in _ids:
                             try:
-                                delete_sentence(int(_i))
+                                delete_sentence(int(_i), _current_user())
                             except Exception:
                                 pass
                         st.session_state.deck_payload = None  # 構成が変わったので作り直す
@@ -1418,7 +1427,7 @@ if _active_tab == "学習":
     # デッキデータを構築してセッションにキャッシュする。判定flushでは作り直さないので
     # 同一htmlになり、iframeは再マウントされない(=裏で保存しても画面が飛ばない)。
     if st.session_state.get("deck_payload") is None:
-        _rows = get_sentences_by_status(None)
+        _rows = get_sentences_by_status(None, _current_user())
         st.session_state.deck_rows = _rows
         st.session_state.deck_payload = _build_deck(_rows, 0)
 

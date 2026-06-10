@@ -131,7 +131,8 @@ def init_db() -> None:
                 explanation TEXT    NOT NULL,
                 status      TEXT    NOT NULL DEFAULT 'new',
                 view_count  INTEGER NOT NULL DEFAULT 0,
-                audio_blob  BLOB
+                audio_blob  BLOB,
+                user_email  TEXT    NOT NULL DEFAULT ''
             )
         """)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sentences)").fetchall()}
@@ -143,6 +144,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE sentences ADD COLUMN audio_blob BLOB")
         if "image_data" not in cols:
             conn.execute("ALTER TABLE sentences ADD COLUMN image_data TEXT")
+        # 複数ユーザー対応: 各カードの所有者(ログインメール)。既存行は '' のまま=どのユーザーにも
+        # 表示されない(個人テストデータの隔離)。所有者で全クエリを絞り、他人のデッキが見えないようにする。
+        if "user_email" not in cols:
+            conn.execute("ALTER TABLE sentences ADD COLUMN user_email TEXT NOT NULL DEFAULT ''")
         # API利用量(トークン数・概算コスト)の記録テーブル。月次の使用量可視化に使う。
         conn.execute("""
             CREATE TABLE IF NOT EXISTS api_usage (
@@ -203,35 +208,39 @@ def get_monthly_usage(year_month: str | None = None) -> dict:
     return {"cost": float(row[0] or 0), "calls": int(row[1] or 0), "month": year_month}
 
 
-def save_sentence(words: list[str], english: str, japanese: str, explanation: str) -> int:
+def save_sentence(words: list[str], english: str, japanese: str, explanation: str, user_email: str = "") -> int:
     with _connect(sync=True) as conn:
         conn.execute(
-            "INSERT INTO sentences (created_at, words, english, japanese, explanation) VALUES (?, ?, ?, ?, ?)",
-            (datetime.now().isoformat(timespec="seconds"), ",".join(words), english, japanese, explanation),
+            "INSERT INTO sentences (created_at, words, english, japanese, explanation, user_email) VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(timespec="seconds"), ",".join(words), english, japanese, explanation, user_email),
         )
         row = conn.execute("SELECT last_insert_rowid()").fetchone()
         return int(row[0])
 
 
-def get_all_sentences() -> list[dict]:
-    with _connect() as conn:
-        cur = conn.execute(f"SELECT {_LIST_COLS} FROM sentences ORDER BY created_at DESC")
-        return _dicts(cur)
-
-
-def search_sentences(keyword: str) -> list[dict]:
-    like = f"%{keyword}%"
+def get_all_sentences(user_email: str) -> list[dict]:
     with _connect() as conn:
         cur = conn.execute(
-            f"SELECT {_LIST_COLS} FROM sentences WHERE english LIKE ? OR japanese LIKE ? OR words LIKE ? ORDER BY created_at DESC",
-            (like, like, like),
+            f"SELECT {_LIST_COLS} FROM sentences WHERE user_email = ? ORDER BY created_at DESC",
+            (user_email,),
         )
         return _dicts(cur)
 
 
-def delete_sentence(row_id: int) -> None:
+def search_sentences(keyword: str, user_email: str) -> list[dict]:
+    like = f"%{keyword}%"
+    with _connect() as conn:
+        cur = conn.execute(
+            f"SELECT {_LIST_COLS} FROM sentences WHERE user_email = ? AND (english LIKE ? OR japanese LIKE ? OR words LIKE ?) ORDER BY created_at DESC",
+            (user_email, like, like, like),
+        )
+        return _dicts(cur)
+
+
+def delete_sentence(row_id: int, user_email: str) -> None:
+    # 所有者一致を条件に入れ、他人のカードを消せないようにする。
     with _connect(sync=True) as conn:
-        conn.execute("DELETE FROM sentences WHERE id = ?", (row_id,))
+        conn.execute("DELETE FROM sentences WHERE id = ? AND user_email = ?", (row_id, user_email))
 
 
 def update_status(row_id: int, status: str) -> None:
@@ -376,23 +385,26 @@ def save_image_data(row_id: int, data: dict) -> None:
         conn.execute("UPDATE sentences SET image_data = ? WHERE id = ?", (_json.dumps(data), row_id))
 
 
-def get_sentences_by_status(status: str | None) -> list[dict]:
-    """statusで絞り込んだ履歴を取得。None or 'all' なら全件。"""
+def get_sentences_by_status(status: str | None, user_email: str) -> list[dict]:
+    """本人のカードを status で絞り込んで取得。None or 'all' なら本人の全件。"""
     with _connect() as conn:
         if status in (None, "all"):
-            cur = conn.execute(f"SELECT {_LIST_COLS} FROM sentences ORDER BY created_at DESC")
+            cur = conn.execute(
+                f"SELECT {_LIST_COLS} FROM sentences WHERE user_email = ? ORDER BY created_at DESC",
+                (user_email,),
+            )
         else:
             cur = conn.execute(
-                f"SELECT {_LIST_COLS} FROM sentences WHERE status = ? ORDER BY created_at DESC",
-                (status,),
+                f"SELECT {_LIST_COLS} FROM sentences WHERE user_email = ? AND status = ? ORDER BY created_at DESC",
+                (user_email, status),
             )
         return _dicts(cur)
 
 
-def get_used_words() -> set[str]:
-    """過去の例文で対象に使われた単語(小文字)の集合を返す。一括取込の重複スキップ用。"""
+def get_used_words(user_email: str) -> set[str]:
+    """本人が過去に使った単語(小文字)の集合を返す。一括取込の重複スキップ用(本人の範囲で判定)。"""
     with _connect() as conn:
-        rows = conn.execute("SELECT words FROM sentences").fetchall()
+        rows = conn.execute("SELECT words FROM sentences WHERE user_email = ?", (user_email,)).fetchall()
     used: set[str] = set()
     for (w,) in rows:
         if not w:
