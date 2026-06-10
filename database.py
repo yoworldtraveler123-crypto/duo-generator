@@ -162,6 +162,12 @@ def init_db() -> None:
                 user_email    TEXT    NOT NULL DEFAULT ''
             )
         """)
+        # 一度きりのバックフィル: 環境変数 WG_BACKFILL_OWNER にメールを入れて起動すると、
+        # 所有者未設定('')の既存カードをそのユーザーのものにする(データ分離導入前のカード救済)。
+        # 反映後は env を外してよい(以降 '' 行が無くなり no-op)。
+        _backfill = os.getenv("WG_BACKFILL_OWNER")
+        if _backfill:
+            conn.execute("UPDATE sentences SET user_email = ? WHERE user_email = ''", (_backfill,))
     _initialized = True
 
 
