@@ -168,9 +168,13 @@ def init_db() -> None:
                 user_email          TEXT PRIMARY KEY,
                 status              TEXT NOT NULL DEFAULT 'inactive',
                 current_period_end  TEXT,
+                stripe_customer_id  TEXT,
                 updated_at          TEXT
             )
         """)
+        subcols = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "stripe_customer_id" not in subcols:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN stripe_customer_id TEXT")
         # 一度きりのバックフィル: 環境変数 WG_BACKFILL_OWNER にメールを入れて起動すると、
         # 所有者未設定('')の既存カードをそのユーザーのものにする(データ分離導入前のカード救済)。
         # 反映後は env を外してよい(以降 '' 行が無くなり no-op)。
@@ -254,15 +258,32 @@ def is_paid(user_email: str) -> bool:
     return bool(row) and row[0] == "active"
 
 
-def set_subscription(user_email: str, status: str, current_period_end: str = "") -> None:
-    """課金状態を upsert する(工事3のStripe webhookから呼ぶ想定)。"""
+def set_subscription(user_email: str, status: str, current_period_end: str = "",
+                     stripe_customer_id: str = "") -> None:
+    """課金状態を upsert する(Stripe決済の照会結果を反映)。
+    stripe_customer_id を '' で渡した場合は既存値を保持する(ステータスだけ更新できる)。"""
     with _connect(sync=True) as conn:
         conn.execute(
-            "INSERT INTO subscriptions (user_email, status, current_period_end, updated_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(user_email) DO UPDATE SET "
-            "status=excluded.status, current_period_end=excluded.current_period_end, updated_at=excluded.updated_at",
-            (user_email, status, current_period_end, datetime.now().isoformat(timespec="seconds")),
+            "INSERT INTO subscriptions (user_email, status, current_period_end, stripe_customer_id, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_email) DO UPDATE SET "
+            "status=excluded.status, current_period_end=excluded.current_period_end, "
+            "stripe_customer_id=COALESCE(NULLIF(excluded.stripe_customer_id, ''), subscriptions.stripe_customer_id), "
+            "updated_at=excluded.updated_at",
+            (user_email, status, current_period_end, stripe_customer_id,
+             datetime.now().isoformat(timespec="seconds")),
         )
+
+
+def get_subscription(user_email: str) -> dict | None:
+    """本人の課金レコードを返す(無ければ None)。Stripe顧客IDの取得などに使う。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "SELECT user_email, status, current_period_end, stripe_customer_id, updated_at "
+            "FROM subscriptions WHERE user_email = ?",
+            (user_email,),
+        )
+        rows = _dicts(cur)
+    return rows[0] if rows else None
 
 
 def save_sentence(words: list[str], english: str, japanese: str, explanation: str, user_email: str = "") -> int:

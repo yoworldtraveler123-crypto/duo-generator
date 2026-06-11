@@ -11,12 +11,18 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 import anthropic
 import streamlit as st
 from dotenv import load_dotenv
 from streamlit.components.v1 import html as st_html
+
+try:
+    import stripe  # 課金(任意機能)。未インストール/未設定でもアプリは動く
+except Exception:
+    stripe = None
 
 from database import (
     delete_sentence,

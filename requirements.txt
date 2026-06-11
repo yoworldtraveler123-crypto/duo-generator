@@ -5,3 +5,4 @@ streamlit>=1.42.0
 Authlib>=1.3.2
 libsql-experimental>=0.0.30
 streamlit-js-eval>=0.1.7
+stripe>=9.0.0
