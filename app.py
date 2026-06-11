@@ -35,9 +35,11 @@ from database import (
     get_monthly_generation_count,
     get_monthly_usage,
     get_sentences_by_status,
+    get_subscription,
     get_used_words,
     init_db,
     is_paid,
+    set_subscription,
     mark_judgments_batch,
     mark_status_and_view,
     record_usage,
@@ -362,6 +364,137 @@ def _quota_block_message() -> str:
     )
 
 
+# ── 課金(工事③ Stripe) ────────────────────────────────────────
+# 方式: Stripe Checkout(subscription) + 戻り時にセッション照会して検証(webhook不要)。
+# 環境変数(Render側で設定)が揃っていなければ機能ごと無効化し、アプリは従来どおり動く。
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://duo-generator.onrender.com").rstrip("/")
+if STRIPE_SECRET_KEY and stripe:
+    stripe.api_key = STRIPE_SECRET_KEY
+
+
+def _stripe_enabled() -> bool:
+    """Stripe課金が使える状態か(ライブラリ導入済み＆キー/価格IDが揃っている)。"""
+    return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID)
+
+
+def _start_checkout(email: str) -> str | None:
+    """Checkout(継続課金)セッションを作り、その決済URLを返す。失敗時 None。"""
+    if not _stripe_enabled() or not email:
+        return None
+    try:
+        kwargs = dict(
+            mode="subscription",
+            line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+            success_url=f"{APP_BASE_URL}/?checkout=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{APP_BASE_URL}/?checkout=cancel",
+            client_reference_id=email,
+            metadata={"app_user": email},
+        )
+        # 既存顧客がいればそれに紐づけ、無ければメールから新規作成させる
+        sub = get_subscription(email)
+        cust = (sub or {}).get("stripe_customer_id") or ""
+        if cust:
+            kwargs["customer"] = cust
+        else:
+            kwargs["customer_email"] = email
+        session = stripe.checkout.Session.create(**kwargs)
+        return session.url
+    except Exception:
+        return None
+
+
+def _handle_checkout_return() -> None:
+    """Checkout成功で戻ってきた時、Stripeにセッション照会して支払い済みなら有料化する。
+    query_params の session_id を信用せず、必ずStripe側へ照会(改ざん不可)。"""
+    if not _stripe_enabled():
+        return
+    qp = st.query_params
+    if qp.get("checkout") != "success":
+        if qp.get("checkout") == "cancel":
+            st.query_params.clear()
+        return
+    sid = qp.get("session_id")
+    if not sid:
+        st.query_params.clear()
+        return
+    try:
+        sess = stripe.checkout.Session.retrieve(sid, expand=["subscription"])
+        paid = (sess.get("payment_status") == "paid") or (sess.get("status") == "complete")
+        owner = (
+            sess.get("client_reference_id")
+            or (sess.get("metadata") or {}).get("app_user")
+            or _current_user()
+        )
+        if paid and owner:
+            period_end = ""
+            sub = sess.get("subscription")
+            if isinstance(sub, dict) and sub.get("current_period_end"):
+                period_end = datetime.fromtimestamp(sub["current_period_end"]).isoformat()
+            cust = sess.get("customer") or ""
+            if isinstance(cust, dict):
+                cust = cust.get("id", "")
+            set_subscription(owner, "active", period_end, cust or "")
+            st.query_params.clear()
+            st.success("⭐ アップグレードが完了しました。無制限でご利用いただけます。")
+        else:
+            st.query_params.clear()
+            st.warning("決済が確認できませんでした。問題が続く場合はお問い合わせください。")
+    except Exception:
+        st.query_params.clear()
+
+
+def _refresh_subscription_status(email: str) -> None:
+    """ログイン時に1回だけ、Stripe上の最新の購読状態をDBへ反映(webhook無しで解約に追従)。"""
+    if not _stripe_enabled() or not email:
+        return
+    if st.session_state.get("_sub_checked"):
+        return
+    st.session_state["_sub_checked"] = True
+    sub = get_subscription(email)
+    cust = (sub or {}).get("stripe_customer_id") or ""
+    if not cust:
+        return
+    try:
+        actives = stripe.Subscription.list(customer=cust, status="active", limit=1)
+        if actives and actives.get("data"):
+            s = actives["data"][0]
+            period_end = ""
+            if s.get("current_period_end"):
+                period_end = datetime.fromtimestamp(s["current_period_end"]).isoformat()
+            set_subscription(email, "active", period_end, cust)
+        else:
+            set_subscription(email, "canceled", (sub or {}).get("current_period_end", ""), cust)
+    except Exception:
+        pass
+
+
+def _portal_url(email: str) -> str | None:
+    """Stripe Customer Portal(解約・支払い方法変更)のURL。顧客IDが無ければ None。"""
+    if not _stripe_enabled() or not email:
+        return None
+    sub = get_subscription(email)
+    cust = (sub or {}).get("stripe_customer_id") or ""
+    if not cust:
+        return None
+    try:
+        sess = stripe.billing_portal.Session.create(customer=cust, return_url=f"{APP_BASE_URL}/")
+        return sess.url
+    except Exception:
+        return None
+
+
+def _redirect_top(url: str) -> None:
+    """iframe(Streamlitコンポーネント)から親ウィンドウごと遷移させる。
+    JSが無効でも進めるよう、リンクのフォールバックも出す。"""
+    st_html(
+        f"<script>window.top.location.href = {json.dumps(url)};</script>",
+        height=0,
+    )
+    st.markdown(f"[こちらをクリックして進む]({url})")
+
+
 # ── ログインゲート: 未ログインなら本体を出さず止める(Render上で有効) ──
 if not _LOCAL_NOAUTH and not st.user.is_logged_in:
     st.title("📚 単語ジェネ")
@@ -377,6 +510,14 @@ with st.sidebar:
     else:
         st.caption(f"ログイン中\n\n{getattr(st.user, 'email', '') or st.user.get('name', '')}")
         st.button("ログアウト", on_click=st.logout, use_container_width=True)
+    # 有料者にはStripeの管理画面(解約・支払い方法変更)への導線を出す
+    if _stripe_enabled() and is_paid(_current_user()):
+        if st.button("プラン管理 / 解約", key="portal_btn", use_container_width=True):
+            _purl = _portal_url(_current_user())
+            if _purl:
+                _redirect_top(_purl)
+            else:
+                st.error("管理画面を開けませんでした。")
 
 # フラッシュカード学習中はタイトル/概要/タブ帯を隠してカードに集中させる
 if st.session_state.get("card_mode_rows") is None:
@@ -429,6 +570,11 @@ if not st.session_state.get("_pwa_injected"):
     st.session_state._pwa_injected = True
 
 init_db()
+
+# 課金(工事③): Checkout成功で戻ってきた決済の検証と、最新の購読状態の同期。
+# どちらも quota 計算より前に実行して当リクエストから有料/無料が正しく反映されるようにする。
+_handle_checkout_return()
+_refresh_subscription_status(_current_user())
 
 # 今月のAPI概算コストをサイドバーに表示(api_usage作成後なので確実にテーブルがある)。
 # Anthropic側で月$5のハード上限があるので、$5に達して突然止まる前に気づくための可視化。
@@ -514,6 +660,13 @@ if _active_tab == "生成":
         st.caption("✓ 無制限プラン")
     else:
         st.caption(f"今月の生成: {_q['used']} / {_q['limit']} 回（無料枠）")
+        if _stripe_enabled():
+            if st.button(f"⭐ アップグレード（{PRICE_LABEL}）", key="upgrade_btn"):
+                _url = _start_checkout(_current_user())
+                if _url:
+                    _redirect_top(_url)
+                else:
+                    st.error("決済ページを開けませんでした。時間をおいて再度お試しください。")
 
     if st.button("例文を生成", type="primary"):
         words = words_input.strip().split()
